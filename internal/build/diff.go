@@ -35,14 +35,15 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/errors"
-	"sigs.k8s.io/cli-utils/pkg/kstatus/polling"
-	"sigs.k8s.io/cli-utils/pkg/object"
 	"sigs.k8s.io/yaml"
 
+	"github.com/fluxcd/cli-utils/pkg/kstatus/polling"
+	"github.com/fluxcd/cli-utils/pkg/object"
+	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	"github.com/fluxcd/pkg/ssa"
+	ssautil "github.com/fluxcd/pkg/ssa/utils"
 
-	"github.com/fluxcd/flux2/pkg/printers"
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta2"
+	"github.com/fluxcd/flux2/v2/pkg/printers"
 )
 
 func (b *Builder) Manager() (*ssa.ResourceManager, error) {
@@ -56,14 +57,30 @@ func (b *Builder) Manager() (*ssa.ResourceManager, error) {
 }
 
 func (b *Builder) Diff() (string, bool, error) {
+	err := b.StartSpinner()
+	if err != nil {
+		return "", false, err
+	}
+
+	output, createdOrDrifted, diffErr := b.diff()
+
+	err = b.StopSpinner()
+	if err != nil {
+		return "", false, err
+	}
+
+	return output, createdOrDrifted, diffErr
+}
+
+func (b *Builder) diff() (string, bool, error) {
 	output := strings.Builder{}
 	createdOrDrifted := false
-	res, err := b.Build()
+	objects, err := b.Build()
 	if err != nil {
 		return "", createdOrDrifted, err
 	}
-	// convert the build result into Kubernetes unstructured objects
-	objects, err := ssa.ReadObjects(bytes.NewReader(res))
+
+	err = ssa.SetNativeKindsDefaults(objects)
 	if err != nil {
 		return "", createdOrDrifted, err
 	}
@@ -76,17 +93,6 @@ func (b *Builder) Diff() (string, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), b.timeout)
 	defer cancel()
 
-	if err := ssa.SetNativeKindsDefaults(objects); err != nil {
-		return "", createdOrDrifted, err
-	}
-
-	if b.spinner != nil {
-		err = b.spinner.Start()
-		if err != nil {
-			return "", false, fmt.Errorf("failed to start spinner: %w", err)
-		}
-	}
-
 	var diffErrs []error
 	// create an inventory of objects to be reconciled
 	newInventory := newInventory()
@@ -94,6 +100,10 @@ func (b *Builder) Diff() (string, bool, error) {
 		diffOptions := ssa.DiffOptions{
 			Exclusions: map[string]string{
 				"kustomize.toolkit.fluxcd.io/reconcile": "disabled",
+				"kustomize.toolkit.fluxcd.io/ssa":       "ignore",
+			},
+			IfNotPresentSelector: map[string]string{
+				"kustomize.toolkit.fluxcd.io/ssa": "ifnotpresent",
 			},
 		}
 		change, liveObject, mergedObject, err := resourceManager.Diff(ctx, obj, diffOptions)
@@ -105,32 +115,61 @@ func (b *Builder) Diff() (string, bool, error) {
 
 		// if the object is a sops secret, we need to
 		// make sure we diff only if the keys are different
-		if obj.GetKind() == "Secret" && change.Action == string(ssa.ConfiguredAction) {
+		if obj.GetKind() == "Secret" && change.Action == ssa.ConfiguredAction {
 			diffSopsSecret(obj, liveObject, mergedObject, change)
 		}
 
-		if change.Action == string(ssa.CreatedAction) {
+		if change.Action == ssa.CreatedAction {
 			output.WriteString(writeString(fmt.Sprintf("► %s created\n", change.Subject), bunt.Green))
 			createdOrDrifted = true
 		}
 
-		if change.Action == string(ssa.ConfiguredAction) {
+		if change.Action == ssa.ConfiguredAction {
 			output.WriteString(bunt.Sprint(fmt.Sprintf("► %s drifted\n", change.Subject)))
 			liveFile, mergedFile, tmpDir, err := writeYamls(liveObject, mergedObject)
 			if err != nil {
 				return "", createdOrDrifted, err
 			}
-			defer cleanupDir(tmpDir)
 
 			err = diff(liveFile, mergedFile, &output)
 			if err != nil {
+				cleanupDir(tmpDir)
 				return "", createdOrDrifted, err
 			}
 
+			cleanupDir(tmpDir)
 			createdOrDrifted = true
 		}
 
 		addObjectsToInventory(newInventory, change)
+
+		if b.recursive && isKustomization(obj) && change.Action != ssa.CreatedAction {
+			k, err := toKustomization(obj)
+			if err != nil {
+				return "", createdOrDrifted, err
+			}
+
+			if !kustomizationsEqual(k, b.kustomization) {
+				if k.Spec.KubeConfig != nil {
+					output.WriteString(writeString(fmt.Sprintf("⚠️ %s skipped: diff not supported for remote clusters\n", ssautil.FmtUnstructured(obj)), bunt.Orange))
+				} else {
+					subOutput, subCreatedOrDrifted, err := b.kustomizationDiff(k)
+					if err != nil {
+						diffErrs = append(diffErrs, err)
+					}
+					if subCreatedOrDrifted {
+						createdOrDrifted = true
+						output.WriteString(bunt.Sprint(fmt.Sprintf("📁 %s changed\n", ssautil.FmtUnstructured(obj))))
+						output.WriteString(subOutput)
+					}
+				}
+
+				// finished with Kustomization diff
+				if b.spinner != nil {
+					b.spinner.Message(spinnerDryRunMessage)
+				}
+			}
+		}
 	}
 
 	if b.spinner != nil {
@@ -140,24 +179,56 @@ func (b *Builder) Diff() (string, bool, error) {
 	if b.kustomization.Spec.Prune && len(diffErrs) == 0 {
 		oldStatus := b.kustomization.Status.DeepCopy()
 		if oldStatus.Inventory != nil {
-			diffObjects, err := diffInventory(oldStatus.Inventory, newInventory)
+			staleObjects, err := diffInventory(oldStatus.Inventory, newInventory)
 			if err != nil {
 				return "", createdOrDrifted, err
 			}
-			for _, object := range diffObjects {
-				output.WriteString(writeString(fmt.Sprintf("► %s deleted\n", ssa.FmtUnstructured(object)), bunt.OrangeRed))
+			if len(staleObjects) > 0 {
+				createdOrDrifted = true
 			}
-		}
-	}
-
-	if b.spinner != nil {
-		err = b.spinner.Stop()
-		if err != nil {
-			return "", createdOrDrifted, fmt.Errorf("failed to stop spinner: %w", err)
+			for _, object := range staleObjects {
+				output.WriteString(writeString(fmt.Sprintf("► %s deleted\n", ssautil.FmtUnstructured(object)), bunt.OrangeRed))
+			}
 		}
 	}
 
 	return output.String(), createdOrDrifted, errors.Reduce(errors.Flatten(errors.NewAggregate(diffErrs)))
+}
+
+func (b *Builder) kustomizationDiff(kustomization *kustomizev1.Kustomization) (string, bool, error) {
+	if b.spinner != nil {
+		b.spinner.Message(fmt.Sprintf("%s in %s", spinnerDryRunMessage, kustomization.Name))
+	}
+
+	sourceRef := kustomization.Spec.SourceRef.DeepCopy()
+	if sourceRef.Namespace == "" {
+		sourceRef.Namespace = kustomization.Namespace
+	}
+
+	sourceKey := sourceRef.String()
+	localPath, ok := b.localSources[sourceKey]
+	if !ok {
+		return "", false, fmt.Errorf("cannot get local path for %s of kustomization %s", sourceKey, kustomization.Name)
+	}
+
+	resourcesPath := filepath.Join(localPath, kustomization.Spec.Path)
+	subBuilder, err := NewBuilder(kustomization.Name, resourcesPath,
+		// use same client and spinner
+		withClientConfigFrom(b),
+		withSpinnerFrom(b),
+		WithTimeout(b.timeout),
+		WithNamespace(kustomization.Namespace),
+		WithIgnore(b.ignore),
+		WithStrictSubstitute(b.strictSubst),
+		WithRecursive(b.recursive),
+		WithLocalSources(b.localSources),
+		WithSingleKustomization(),
+	)
+	if err != nil {
+		return "", false, err
+	}
+
+	return subBuilder.diff()
 }
 
 func writeYamls(liveObject, mergedObject *unstructured.Unstructured) (string, string, string, error) {
@@ -168,13 +239,13 @@ func writeYamls(liveObject, mergedObject *unstructured.Unstructured) (string, st
 
 	liveYAML, _ := yaml.Marshal(liveObject)
 	liveFile := filepath.Join(tmpDir, "live.yaml")
-	if err := os.WriteFile(liveFile, liveYAML, 0644); err != nil {
+	if err := os.WriteFile(liveFile, liveYAML, 0o600); err != nil {
 		return "", "", "", err
 	}
 
 	mergedYAML, _ := yaml.Marshal(mergedObject)
 	mergedFile := filepath.Join(tmpDir, "merged.yaml")
-	if err := os.WriteFile(mergedFile, mergedYAML, 0644); err != nil {
+	if err := os.WriteFile(mergedFile, mergedYAML, 0o600); err != nil {
 		return "", "", "", err
 	}
 
@@ -232,10 +303,10 @@ func applySopsDiff(data map[string]interface{}, liveObject, mergedObject *unstru
 
 		if bytes.Contains(v, []byte(mask)) {
 			if liveObject != nil && mergedObject != nil {
-				change.Action = string(ssa.UnchangedAction)
+				change.Action = ssa.UnchangedAction
 				liveKeys, mergedKeys := sopsComparableByKeys(liveObject), sopsComparableByKeys(mergedObject)
 				if cmp.Diff(liveKeys, mergedKeys) != "" {
-					change.Action = string(ssa.ConfiguredAction)
+					change.Action = ssa.ConfiguredAction
 				}
 			}
 		}

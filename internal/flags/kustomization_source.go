@@ -20,12 +20,13 @@ import (
 	"fmt"
 	"strings"
 
-	sourcev1 "github.com/fluxcd/source-controller/api/v1beta2"
+	sourcev1 "github.com/fluxcd/source-controller/api/v1"
+	sourcev1b2 "github.com/fluxcd/source-controller/api/v1beta2"
 
-	"github.com/fluxcd/flux2/internal/utils"
+	"github.com/fluxcd/flux2/v2/internal/utils"
 )
 
-var supportedKustomizationSourceKinds = []string{sourcev1.OCIRepositoryKind, sourcev1.GitRepositoryKind, sourcev1.BucketKind}
+var supportedKustomizationSourceKinds = []string{sourcev1b2.OCIRepositoryKind, sourcev1.GitRepositoryKind, sourcev1.BucketKind}
 
 type KustomizationSource struct {
 	Kind      string
@@ -52,7 +53,7 @@ func (s *KustomizationSource) Set(str string) error {
 	}
 	if sourceKind == "" {
 		if utils.ContainsItemString(supportedKustomizationSourceKinds, sourceName) {
-			return fmt.Errorf("no name given for source of kind '%s'", sourceName)
+			return fmt.Errorf("no kind specified for source '%s'", sourceName)
 		}
 		sourceKind = sourcev1.GitRepositoryKind
 	}

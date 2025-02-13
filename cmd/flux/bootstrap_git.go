@@ -28,44 +28,48 @@ import (
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/fluxcd/flux2/internal/flags"
-	"github.com/fluxcd/flux2/internal/utils"
-	"github.com/fluxcd/flux2/pkg/bootstrap"
-	"github.com/fluxcd/flux2/pkg/manifestgen"
-	"github.com/fluxcd/flux2/pkg/manifestgen/install"
-	"github.com/fluxcd/flux2/pkg/manifestgen/sourcesecret"
-	"github.com/fluxcd/flux2/pkg/manifestgen/sync"
 	"github.com/fluxcd/pkg/git"
 	"github.com/fluxcd/pkg/git/gogit"
+
+	"github.com/fluxcd/flux2/v2/internal/flags"
+	"github.com/fluxcd/flux2/v2/internal/utils"
+	"github.com/fluxcd/flux2/v2/pkg/bootstrap"
+	"github.com/fluxcd/flux2/v2/pkg/manifestgen"
+	"github.com/fluxcd/flux2/v2/pkg/manifestgen/install"
+	"github.com/fluxcd/flux2/v2/pkg/manifestgen/sourcesecret"
+	"github.com/fluxcd/flux2/v2/pkg/manifestgen/sync"
 )
 
 var bootstrapGitCmd = &cobra.Command{
 	Use:   "git",
-	Short: "Bootstrap toolkit components in a Git repository",
-	Long: `The bootstrap git command commits the toolkit components manifests to the
-branch of a Git repository. It then configures the target cluster to synchronize with
-the repository. If the toolkit components are present on the cluster, the bootstrap
+	Short: "Deploy Flux on a cluster connected to a Git repository",
+	Long: `The bootstrap git command commits the Flux manifests to the
+branch of a Git repository. And then it configures the target cluster to synchronize with
+that repository. If the Flux components are present on the cluster, the bootstrap
 command will perform an upgrade if needed.`,
 	Example: `  # Run bootstrap for a Git repository and authenticate with your SSH agent
-  flux bootstrap git --url=ssh://git@example.com/repository.git
+  flux bootstrap git --url=ssh://git@example.com/repository.git --path=clusters/my-cluster
 
   # Run bootstrap for a Git repository and authenticate using a password
-  flux bootstrap git --url=https://example.com/repository.git --password=<password>
+  flux bootstrap git --url=https://example.com/repository.git --password=<password> --path=clusters/my-cluster
 
   # Run bootstrap for a Git repository and authenticate using a password from environment variable
-  GIT_PASSWORD=<password> && flux bootstrap git --url=https://example.com/repository.git
+  GIT_PASSWORD=<password> && flux bootstrap git --url=https://example.com/repository.git --path=clusters/my-cluster
 
   # Run bootstrap for a Git repository with a passwordless private key
-  flux bootstrap git --url=ssh://git@example.com/repository.git --private-key-file=<path/to/private.key>
+  flux bootstrap git --url=ssh://git@example.com/repository.git --private-key-file=<path/to/private.key> --path=clusters/my-cluster
 
   # Run bootstrap for a Git repository with a private key and password
-  flux bootstrap git --url=ssh://git@example.com/repository.git --private-key-file=<path/to/private.key> --password=<password>
+  flux bootstrap git --url=ssh://git@example.com/repository.git --private-key-file=<path/to/private.key> --password=<password> --path=clusters/my-cluster
 
   # Run bootstrap for a Git repository on AWS CodeCommit
-  flux bootstrap git --url=ssh://<SSH-Key-ID>@git-codecommit.<region>.amazonaws.com/v1/repos/<repository> --private-key-file=<path/to/private.key> --password=<SSH-passphrase>
+  flux bootstrap git --url=ssh://<SSH-Key-ID>@git-codecommit.<region>.amazonaws.com/v1/repos/<repository> --private-key-file=<path/to/private.key> --password=<SSH-passphrase> --path=clusters/my-cluster
 
   # Run bootstrap for a Git repository on Azure Devops
-  flux bootstrap git --url=ssh://git@ssh.dev.azure.com/v3/<org>/<project>/<repository> --ssh-key-algorithm=rsa --ssh-rsa-bits=4096
+  flux bootstrap git --url=ssh://git@ssh.dev.azure.com/v3/<org>/<project>/<repository> --private-key-file=<path/to/rsa-sha2-private.key> --ssh-hostkey-algos=rsa-sha2-512,rsa-sha2-256 --path=clusters/my-cluster
+
+  # Run bootstrap for a Git repository on Oracle VBS
+  flux bootstrap git --url=https://repository_url.git --with-bearer-token=true --password=<PAT> --path=clusters/my-cluster
 `,
 	RunE: bootstrapGitCmdRun,
 }
@@ -78,6 +82,7 @@ type gitFlags struct {
 	password            string
 	silent              bool
 	insecureHttpAllowed bool
+	withBearerToken     bool
 }
 
 const (
@@ -93,12 +98,17 @@ func init() {
 	bootstrapGitCmd.Flags().StringVarP(&gitArgs.username, "username", "u", "git", "basic authentication username")
 	bootstrapGitCmd.Flags().StringVarP(&gitArgs.password, "password", "p", "", "basic authentication password")
 	bootstrapGitCmd.Flags().BoolVarP(&gitArgs.silent, "silent", "s", false, "assumes the deploy key is already setup, skips confirmation")
-	bootstrapGitCmd.Flags().BoolVar(&gitArgs.insecureHttpAllowed, "allow-insecure-http", false, "allows http git url connections")
+	bootstrapGitCmd.Flags().BoolVar(&gitArgs.insecureHttpAllowed, "allow-insecure-http", false, "allows insecure HTTP connections")
+	bootstrapGitCmd.Flags().BoolVar(&gitArgs.withBearerToken, "with-bearer-token", false, "use password as bearer token for Authorization header")
 
 	bootstrapCmd.AddCommand(bootstrapGitCmd)
 }
 
 func bootstrapGitCmdRun(cmd *cobra.Command, args []string) error {
+	if gitArgs.withBearerToken {
+		bootstrapArgs.tokenAuth = true
+	}
+
 	gitPassword := os.Getenv(gitPasswordEnvVar)
 	if gitPassword != "" && gitArgs.password == "" {
 		gitArgs.password = gitPassword
@@ -134,7 +144,7 @@ func bootstrapGitCmdRun(cmd *cobra.Command, args []string) error {
 			}
 		}
 		if repositoryURL.Scheme == string(git.HTTPS) && !bootstrapArgs.tokenAuth {
-			return fmt.Errorf("--token-auth=true must be specified for using a HTTPS AWS CodeCommit url")
+			return fmt.Errorf("--token-auth=true must be specified for using an HTTPS AWS CodeCommit url")
 		}
 	}
 
@@ -144,6 +154,13 @@ func bootstrapGitCmdRun(cmd *cobra.Command, args []string) error {
 	kubeClient, err := utils.KubeClient(kubeconfigArgs, kubeclientOptions)
 	if err != nil {
 		return err
+	}
+
+	if !bootstrapArgs.force {
+		err = confirmBootstrap(ctx, kubeClient)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Manifest base
@@ -194,6 +211,7 @@ func bootstrapGitCmdRun(cmd *cobra.Command, args []string) error {
 		Namespace:              *kubeconfigArgs.Namespace,
 		Components:             bootstrapComponents(),
 		Registry:               bootstrapArgs.registry,
+		RegistryCredential:     bootstrapArgs.registryCredential,
 		ImagePullSecret:        bootstrapArgs.imagePullSecret,
 		WatchAllNamespaces:     bootstrapArgs.watchAllNamespaces,
 		NetworkPolicy:          bootstrapArgs.networkPolicy,
@@ -216,10 +234,16 @@ func bootstrapGitCmdRun(cmd *cobra.Command, args []string) error {
 		TargetPath:   gitArgs.path.String(),
 		ManifestFile: sourcesecret.MakeDefaultOptions().ManifestFile,
 	}
+
 	if bootstrapArgs.tokenAuth {
-		secretOpts.Username = gitArgs.username
-		secretOpts.Password = gitArgs.password
-		secretOpts.CAFile = caBundle
+		if gitArgs.withBearerToken {
+			secretOpts.BearerToken = gitArgs.password
+		} else {
+			secretOpts.Username = gitArgs.username
+			secretOpts.Password = gitArgs.password
+		}
+
+		secretOpts.CACrt = caBundle
 
 		// Remove port of the given host when not syncing over HTTP/S to not assume port for protocol
 		// This _might_ be overwritten later on by e.g. --ssh-hostname
@@ -271,7 +295,6 @@ func bootstrapGitCmdRun(cmd *cobra.Command, args []string) error {
 		Secret:            bootstrapArgs.secretName,
 		TargetPath:        gitArgs.path.ToSlash(),
 		ManifestFile:      sync.MakeDefaultOptions().ManifestFile,
-		GitImplementation: sourceGitArgs.gitImplementation.String(),
 		RecurseSubmodules: bootstrapArgs.recurseSubmodules,
 	}
 
@@ -312,18 +335,28 @@ func getAuthOpts(u *url.URL, caBundle []byte) (*git.AuthOptions, error) {
 		if !gitArgs.insecureHttpAllowed {
 			return nil, fmt.Errorf("scheme http is insecure, pass --allow-insecure-http=true to allow it")
 		}
-		return &git.AuthOptions{
+		httpAuth := git.AuthOptions{
 			Transport: git.HTTP,
-			Username:  gitArgs.username,
-			Password:  gitArgs.password,
-		}, nil
+		}
+		if gitArgs.withBearerToken {
+			httpAuth.BearerToken = gitArgs.password
+		} else {
+			httpAuth.Username = gitArgs.username
+			httpAuth.Password = gitArgs.password
+		}
+		return &httpAuth, nil
 	case "https":
-		return &git.AuthOptions{
+		httpsAuth := git.AuthOptions{
 			Transport: git.HTTPS,
-			Username:  gitArgs.username,
-			Password:  gitArgs.password,
 			CAFile:    caBundle,
-		}, nil
+		}
+		if gitArgs.withBearerToken {
+			httpsAuth.BearerToken = gitArgs.password
+		} else {
+			httpsAuth.Username = gitArgs.username
+			httpsAuth.Password = gitArgs.password
+		}
+		return &httpsAuth, nil
 	case "ssh":
 		authOpts := &git.AuthOptions{
 			Transport: git.SSH,

@@ -23,8 +23,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/fluxcd/flux2/internal/build"
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta2"
+	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
+	ssautil "github.com/fluxcd/pkg/ssa/utils"
+
+	"github.com/fluxcd/flux2/v2/internal/build"
 )
 
 var buildKsCmd = &cobra.Command{
@@ -44,7 +46,19 @@ flux build kustomization my-app --path ./path/to/local/manifests --kustomization
 
 # Build in dry-run mode without connecting to the cluster.
 # Note that variable substitutions from Secrets and ConfigMaps are skipped in dry-run mode.
-flux build kustomization my-app --path ./path/to/local/manifests --kustomization-file ./path/to/local/my-app.yaml --dry-run`,
+flux build kustomization my-app --path ./path/to/local/manifests \
+	--kustomization-file ./path/to/local/my-app.yaml \
+	--dry-run
+
+# Exclude files by providing a comma separated list of entries that follow the .gitignore pattern fromat.
+flux build kustomization my-app --path ./path/to/local/manifests \
+	--kustomization-file ./path/to/local/my-app.yaml \
+	--ignore-paths "/to_ignore/**/*.yaml,ignore.yaml"
+
+# Run recursively on all encountered Kustomizations
+flux build kustomization my-app --path ./path/to/local/manifests \
+	--recursive \
+	--local-sources GitRepository/flux-system/my-repo=./path/to/local/git`,
 	ValidArgsFunction: resourceNamesCompletionFunc(kustomizev1.GroupVersion.WithKind(kustomizev1.KustomizationKind)),
 	RunE:              buildKsCmdRun,
 }
@@ -52,7 +66,11 @@ flux build kustomization my-app --path ./path/to/local/manifests --kustomization
 type buildKsFlags struct {
 	kustomizationFile string
 	path              string
+	ignorePaths       []string
 	dryRun            bool
+	strictSubst       bool
+	recursive         bool
+	localSources      map[string]string
 }
 
 var buildKsArgs buildKsFlags
@@ -60,7 +78,12 @@ var buildKsArgs buildKsFlags
 func init() {
 	buildKsCmd.Flags().StringVar(&buildKsArgs.path, "path", "", "Path to the manifests location.")
 	buildKsCmd.Flags().StringVar(&buildKsArgs.kustomizationFile, "kustomization-file", "", "Path to the Flux Kustomization YAML file.")
+	buildKsCmd.Flags().StringSliceVar(&buildKsArgs.ignorePaths, "ignore-paths", nil, "set paths to ignore in .gitignore format")
 	buildKsCmd.Flags().BoolVar(&buildKsArgs.dryRun, "dry-run", false, "Dry run mode.")
+	buildKsCmd.Flags().BoolVar(&buildKsArgs.strictSubst, "strict-substitute", false,
+		"When enabled, the post build substitutions will fail if a var without a default value is declared in files but is missing from the input vars.")
+	buildKsCmd.Flags().BoolVarP(&buildKsArgs.recursive, "recursive", "r", false, "Recursively build Kustomizations")
+	buildKsCmd.Flags().StringToStringVar(&buildKsArgs.localSources, "local-sources", nil, "Comma-separated list of repositories in format: Kind/namespace/name=path")
 	buildCmd.AddCommand(buildKsCmd)
 }
 
@@ -95,12 +118,20 @@ func buildKsCmdRun(cmd *cobra.Command, args []string) (err error) {
 			build.WithKustomizationFile(buildKsArgs.kustomizationFile),
 			build.WithDryRun(buildKsArgs.dryRun),
 			build.WithNamespace(*kubeconfigArgs.Namespace),
+			build.WithIgnore(buildKsArgs.ignorePaths),
+			build.WithStrictSubstitute(buildKsArgs.strictSubst),
+			build.WithRecursive(buildKsArgs.recursive),
+			build.WithLocalSources(buildKsArgs.localSources),
 		)
 	} else {
 		builder, err = build.NewBuilder(name, buildKsArgs.path,
 			build.WithClientConfig(kubeconfigArgs, kubeclientOptions),
 			build.WithTimeout(rootArgs.timeout),
 			build.WithKustomizationFile(buildKsArgs.kustomizationFile),
+			build.WithIgnore(buildKsArgs.ignorePaths),
+			build.WithStrictSubstitute(buildKsArgs.strictSubst),
+			build.WithRecursive(buildKsArgs.recursive),
+			build.WithLocalSources(buildKsArgs.localSources),
 		)
 	}
 
@@ -114,12 +145,17 @@ func buildKsCmdRun(cmd *cobra.Command, args []string) (err error) {
 
 	errChan := make(chan error)
 	go func() {
-		manifests, err := builder.Build()
+		objects, err := builder.Build()
 		if err != nil {
 			errChan <- err
 		}
 
-		cmd.Print(string(manifests))
+		manifests, err := ssautil.ObjectsToYAML(objects)
+		if err != nil {
+			errChan <- err
+		}
+
+		cmd.Print(manifests)
 		errChan <- nil
 	}()
 

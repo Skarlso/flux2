@@ -29,9 +29,9 @@ import (
 
 	"github.com/fluxcd/go-git-providers/gitprovider"
 
-	"github.com/fluxcd/flux2/pkg/bootstrap/provider"
-	"github.com/fluxcd/flux2/pkg/manifestgen/sourcesecret"
-	"github.com/fluxcd/flux2/pkg/manifestgen/sync"
+	"github.com/fluxcd/flux2/v2/pkg/bootstrap/provider"
+	"github.com/fluxcd/flux2/v2/pkg/manifestgen/sourcesecret"
+	"github.com/fluxcd/flux2/v2/pkg/manifestgen/sync"
 	"github.com/fluxcd/pkg/git/repository"
 )
 
@@ -58,6 +58,8 @@ type GitProviderBootstrapper struct {
 	syncTransportType      string
 
 	sshHostname string
+
+	useDeployTokenAuth bool
 
 	provider gitprovider.Client
 }
@@ -89,6 +91,12 @@ func WithProviderRepository(owner, repositoryName string, personal bool) GitProv
 		owner:          owner,
 		repositoryName: repositoryName,
 		personal:       personal,
+	}
+}
+
+func WithProviderVisibility(visibility string) GitProviderOption {
+	return providerRepositoryConfigOption{
+		visibility: visibility,
 	}
 }
 
@@ -184,6 +192,16 @@ func (o reconcileOption) applyGitProvider(b *GitProviderBootstrapper) {
 	b.reconcile = true
 }
 
+func WithDeployTokenAuth() GitProviderOption {
+	return deployTokenAuthOption(true)
+}
+
+type deployTokenAuthOption bool
+
+func (o deployTokenAuthOption) applyGitProvider(b *GitProviderBootstrapper) {
+	b.useDeployTokenAuth = true
+}
+
 func (b *GitProviderBootstrapper) ReconcileSyncConfig(ctx context.Context, options sync.Options) error {
 	if b.repository == nil {
 		return errors.New("repository is required")
@@ -206,6 +224,26 @@ func (b *GitProviderBootstrapper) ReconcileSyncConfig(ctx context.Context, optio
 	}
 
 	return b.PlainGitBootstrapper.ReconcileSyncConfig(ctx, options)
+}
+
+func (b *GitProviderBootstrapper) ReconcileSourceSecret(ctx context.Context, options sourcesecret.Options) error {
+	if b.repository == nil {
+		return errors.New("repository is required")
+	}
+
+	if b.useDeployTokenAuth {
+		deployTokenInfo, err := b.reconcileDeployToken(ctx, options)
+		if err != nil {
+			return err
+		}
+
+		if deployTokenInfo != nil {
+			options.Username = deployTokenInfo.Username
+			options.Password = deployTokenInfo.Token
+		}
+	}
+
+	return b.PlainGitBootstrapper.ReconcileSourceSecret(ctx, options)
 }
 
 // ReconcileRepository reconciles an organization or user repository with the
@@ -261,6 +299,32 @@ func (b *GitProviderBootstrapper) reconcileDeployKey(ctx context.Context, secret
 	return nil
 }
 
+func (b *GitProviderBootstrapper) reconcileDeployToken(ctx context.Context, options sourcesecret.Options) (*gitprovider.DeployTokenInfo, error) {
+	dts, err := b.repository.DeployTokens()
+	if err != nil {
+		return nil, err
+	}
+
+	b.logger.Actionf("checking to reconcile deploy token for source secret")
+	name := deployTokenName(options.Namespace, b.branch, options.Name, options.TargetPath)
+	deployTokenInfo := gitprovider.DeployTokenInfo{Name: name}
+
+	deployToken, changed, err := dts.Reconcile(ctx, deployTokenInfo)
+	if err != nil {
+		return nil, err
+	}
+
+	if changed {
+		b.logger.Successf("configured deploy token %q for %q", deployTokenInfo.Name, b.repository.Repository().String())
+		deployTokenInfo := deployToken.Get()
+		return &deployTokenInfo, nil
+	}
+
+	b.logger.Successf("reconciled deploy token for source secret")
+
+	return nil, nil
+}
+
 // reconcileOrgRepository reconciles a gitprovider.OrgRepository
 // with the GitProviderBootstrapper values, including any
 // gitprovider.TeamAccessInfo configurations.
@@ -285,7 +349,7 @@ func (b *GitProviderBootstrapper) reconcileOrgRepository(ctx context.Context) (g
 	repo, err := b.provider.OrgRepositories().Get(ctx, repoRef)
 	if err != nil {
 		if !errors.Is(err, gitprovider.ErrNotFound) {
-			return nil, fmt.Errorf("failed to get Git repository %q: %w", repoRef.String(), err)
+			return nil, fmt.Errorf("failed to get Git repository %q: provider error: %w", repoRef.String(), err)
 		}
 		// go-git-providers has at present some issues with the idempotency
 		// of the available Reconcile methods, and setting e.g. the default
@@ -358,13 +422,18 @@ func (b *GitProviderBootstrapper) reconcileUserRepository(ctx context.Context) (
 	repo, err := b.provider.UserRepositories().Get(ctx, repoRef)
 	if err != nil {
 		if !errors.Is(err, gitprovider.ErrNotFound) {
-			return nil, fmt.Errorf("failed to get Git repository %q: %w", repoRef.String(), err)
+			return nil, fmt.Errorf("failed to get Git repository %q: provider error: %w", repoRef.String(), err)
 		}
 		// go-git-providers has at present some issues with the idempotency
 		// of the available Reconcile methods, and setting e.g. the default
 		// branch correctly. Resort to Create until this has been resolved.
 		repo, err = b.provider.UserRepositories().Create(ctx, repoRef, repoInfo)
 		if err != nil {
+			var userErr *gitprovider.ErrIncorrectUser
+			if errors.As(err, &userErr) {
+				// return a better error message when the wrong owner is set
+				err = fmt.Errorf("the specified owner '%s' doesn't match the identity associated with the given token", b.owner)
+			}
 			return nil, fmt.Errorf("failed to create new Git repository %q: %w", repoRef.String(), err)
 		}
 		b.logger.Successf("repository %q created", repoRef.String())
@@ -552,6 +621,17 @@ func deployKeyName(namespace, secretName, branch, path string) string {
 		}
 	}
 	return name
+}
+
+func deployTokenName(namespace, secretName, branch, path string) string {
+	var elems []string
+	for _, v := range []string{namespace, secretName, branch, path} {
+		if v == "" {
+			continue
+		}
+		elems = append(elems, v)
+	}
+	return strings.Join(elems, "-")
 }
 
 // setHostname is a helper to replace the hostname of the given URL.

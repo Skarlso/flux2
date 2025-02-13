@@ -24,25 +24,24 @@ import (
 
 	"github.com/spf13/cobra"
 	"k8s.io/apimachinery/pkg/api/errors"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	helmv2 "github.com/fluxcd/helm-controller/api/v2beta1"
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta2"
+	helmv2 "github.com/fluxcd/helm-controller/api/v2"
+	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	"github.com/fluxcd/pkg/apis/meta"
 
-	"github.com/fluxcd/flux2/internal/flags"
-	"github.com/fluxcd/flux2/internal/utils"
+	"github.com/fluxcd/flux2/v2/internal/flags"
+	"github.com/fluxcd/flux2/v2/internal/utils"
 )
 
 var createKsCmd = &cobra.Command{
 	Use:     "kustomization [name]",
 	Aliases: []string{"ks"},
 	Short:   "Create or update a Kustomization resource",
-	Long:    "The create command generates a Kustomization resource for a given source.",
+	Long:    `The create command generates a Kustomization resource for a given source.`,
 	Example: `  # Create a Kustomization resource from a source at a given path
   flux create kustomization kyverno \
     --source=GitRepository/kyverno \
@@ -97,6 +96,7 @@ type kustomizationFlags struct {
 	targetNamespace     string
 	wait                bool
 	kubeConfigSecretRef string
+	retryInterval       time.Duration
 }
 
 var kustomizationArgs = NewKustomizationFlags()
@@ -116,6 +116,7 @@ func init() {
 	createKsCmd.Flags().StringVar(&kustomizationArgs.targetNamespace, "target-namespace", "", "overrides the namespace of all Kustomization objects reconciled by this Kustomization")
 	createKsCmd.Flags().StringVar(&kustomizationArgs.kubeConfigSecretRef, "kubeconfig-secret-ref", "", "the name of the Kubernetes Secret that contains a key with the kubeconfig file for connecting to a remote cluster")
 	createKsCmd.Flags().MarkDeprecated("validation", "this arg is no longer used, all resources are validated using server-side apply dry-run")
+	createKsCmd.Flags().DurationVar(&kustomizationArgs.retryInterval, "retry-interval", 0, "the interval at which to retry a previously failed reconciliation")
 
 	createCmd.AddCommand(createKsCmd)
 }
@@ -238,6 +239,10 @@ func createKsCmdRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if kustomizationArgs.retryInterval > 0 {
+		kustomization.Spec.RetryInterval = &metav1.Duration{Duration: kustomizationArgs.retryInterval}
+	}
+
 	if createArgs.export {
 		return printExport(exportKs(&kustomization))
 	}
@@ -257,8 +262,8 @@ func createKsCmdRun(cmd *cobra.Command, args []string) error {
 	}
 
 	logger.Waitingf("waiting for Kustomization reconciliation")
-	if err := wait.PollImmediate(rootArgs.pollInterval, rootArgs.timeout,
-		isKustomizationReady(ctx, kubeClient, namespacedName, &kustomization)); err != nil {
+	if err := wait.PollUntilContextTimeout(ctx, rootArgs.pollInterval, rootArgs.timeout, true,
+		isObjectReadyConditionFunc(kubeClient, namespacedName, &kustomization)); err != nil {
 		return err
 	}
 	logger.Successf("Kustomization %s is ready", name)
@@ -296,29 +301,4 @@ func upsertKustomization(ctx context.Context, kubeClient client.Client,
 	kustomization = &existing
 	logger.Successf("Kustomization updated")
 	return namespacedName, nil
-}
-
-func isKustomizationReady(ctx context.Context, kubeClient client.Client,
-	namespacedName types.NamespacedName, kustomization *kustomizev1.Kustomization) wait.ConditionFunc {
-	return func() (bool, error) {
-		err := kubeClient.Get(ctx, namespacedName, kustomization)
-		if err != nil {
-			return false, err
-		}
-
-		// Confirm the state we are observing is for the current generation
-		if kustomization.Generation != kustomization.Status.ObservedGeneration {
-			return false, nil
-		}
-
-		if c := apimeta.FindStatusCondition(kustomization.Status.Conditions, meta.ReadyCondition); c != nil {
-			switch c.Status {
-			case metav1.ConditionTrue:
-				return true, nil
-			case metav1.ConditionFalse:
-				return false, fmt.Errorf(c.Message)
-			}
-		}
-		return false, nil
-	}
 }

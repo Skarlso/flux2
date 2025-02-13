@@ -33,7 +33,8 @@ import (
 var buildArtifactCmd = &cobra.Command{
 	Use:   "artifact",
 	Short: "Build artifact",
-	Long:  `The build artifact command creates a tgz file with the manifests from the given directory or a single manifest file.`,
+	Long: withPreviewNote(`The build artifact command creates a tgz file with the manifests
+from the given directory or a single manifest file.`),
 	Example: `  # Build the given manifests directory into an artifact
   flux build artifact --path ./path/to/local/manifests --output ./path/to/artifact.tgz
 
@@ -86,9 +87,9 @@ func buildArtifactCmdRun(cmd *cobra.Command, args []string) error {
 
 	logger.Actionf("building artifact from %s", path)
 
-	ociClient := oci.NewLocalClient()
+	ociClient := oci.NewClient(oci.DefaultOptions())
 	if err := ociClient.Build(buildArtifactArgs.output, path, buildArtifactArgs.ignorePaths); err != nil {
-		return fmt.Errorf("bulding artifact failed, error: %w", err)
+		return fmt.Errorf("building artifact failed, error: %w", err)
 	}
 
 	logger.Successf("artifact created at %s", buildArtifactArgs.output)

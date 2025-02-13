@@ -22,6 +22,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"testing"
 	"text/template"
 )
@@ -63,6 +64,18 @@ func TestBuildKustomization(t *testing.T) {
 			resultFile: "./testdata/build-kustomization/podinfo-with-var-substitution-result.yaml",
 			assertFunc: "assertGoldenTemplateFile",
 		},
+		{
+			name:       "build ignore",
+			args:       "build kustomization podinfo --path ./testdata/build-kustomization/ignore --ignore-paths \"!configmap.yaml,!secret.yaml\"",
+			resultFile: "./testdata/build-kustomization/podinfo-with-ignore-result.yaml",
+			assertFunc: "assertGoldenTemplateFile",
+		},
+		{
+			name:       "build with recursive",
+			args:       "build kustomization podinfo --path ./testdata/build-kustomization/podinfo-with-my-app --recursive --local-sources GitRepository/default/podinfo=./testdata/build-kustomization",
+			resultFile: "./testdata/build-kustomization/podinfo-with-my-app-result.yaml",
+			assertFunc: "assertGoldenTemplateFile",
+		},
 	}
 
 	tmpl := map[string]string{
@@ -92,7 +105,7 @@ func TestBuildKustomization(t *testing.T) {
 }
 
 func TestBuildLocalKustomization(t *testing.T) {
-	podinfo := `apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
+	podinfo := `apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
   name: podinfo
@@ -112,6 +125,8 @@ spec:
       cluster_region: "eu-central-1"
 `
 
+	tmpFile := filepath.Join(t.TempDir(), "podinfo.yaml")
+
 	tests := []struct {
 		name       string
 		args       string
@@ -126,26 +141,32 @@ spec:
 		},
 		{
 			name:       "build podinfo",
-			args:       "build kustomization podinfo --kustomization-file ./testdata/build-kustomization/podinfo.yaml --path ./testdata/build-kustomization/podinfo",
+			args:       "build kustomization podinfo --kustomization-file " + tmpFile + " --path ./testdata/build-kustomization/podinfo",
 			resultFile: "./testdata/build-kustomization/podinfo-result.yaml",
 			assertFunc: "assertGoldenTemplateFile",
 		},
 		{
 			name:       "build podinfo without service",
-			args:       "build kustomization podinfo --kustomization-file ./testdata/build-kustomization/podinfo.yaml --path ./testdata/build-kustomization/delete-service",
+			args:       "build kustomization podinfo --kustomization-file " + tmpFile + " --path ./testdata/build-kustomization/delete-service",
 			resultFile: "./testdata/build-kustomization/podinfo-without-service-result.yaml",
 			assertFunc: "assertGoldenTemplateFile",
 		},
 		{
 			name:       "build deployment and configmap with var substitution",
-			args:       "build kustomization podinfo --kustomization-file ./testdata/build-kustomization/podinfo.yaml --path ./testdata/build-kustomization/var-substitution",
+			args:       "build kustomization podinfo --kustomization-file " + tmpFile + " --path ./testdata/build-kustomization/var-substitution",
 			resultFile: "./testdata/build-kustomization/podinfo-with-var-substitution-result.yaml",
 			assertFunc: "assertGoldenTemplateFile",
 		},
 		{
 			name:       "build deployment and configmap with var substitution in dry-run mode",
-			args:       "build kustomization podinfo --kustomization-file ./testdata/build-kustomization/podinfo.yaml --path ./testdata/build-kustomization/var-substitution --dry-run",
+			args:       "build kustomization podinfo --kustomization-file " + tmpFile + " --path ./testdata/build-kustomization/var-substitution --dry-run",
 			resultFile: "./testdata/build-kustomization/podinfo-with-var-substitution-result.yaml",
+			assertFunc: "assertGoldenTemplateFile",
+		},
+		{
+			name:       "build with recursive",
+			args:       "build kustomization podinfo --kustomization-file " + tmpFile + " --path ./testdata/build-kustomization/podinfo-with-my-app --recursive --local-sources GitRepository/default/podinfo=./testdata/build-kustomization",
+			resultFile: "./testdata/build-kustomization/podinfo-with-my-app-result.yaml",
 			assertFunc: "assertGoldenTemplateFile",
 		},
 	}
@@ -153,8 +174,7 @@ spec:
 	tmpl := map[string]string{
 		"fluxns": allocateNamespace("flux-system"),
 	}
-
-	testEnv.CreateObjectFile("./testdata/build-kustomization/podinfo-source.yaml", tmpl, t)
+	setup(t, tmpl)
 
 	temp, err := template.New("podinfo").Parse(podinfo)
 	if err != nil {
@@ -167,12 +187,10 @@ spec:
 		t.Fatal(err)
 	}
 
-	err = os.WriteFile("./testdata/build-kustomization/podinfo.yaml", b.Bytes(), 0666)
+	err = os.WriteFile(tmpFile, b.Bytes(), 0666)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	defer os.Remove("./testdata/build-kustomization/podinfo.yaml")
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

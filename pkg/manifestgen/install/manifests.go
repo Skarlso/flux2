@@ -26,10 +26,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/fluxcd/pkg/kustomize/filesys"
-	"github.com/fluxcd/pkg/untar"
+	"github.com/hashicorp/go-cleanhttp"
 
-	"github.com/fluxcd/flux2/pkg/manifestgen/kustomization"
+	"github.com/fluxcd/pkg/kustomize/filesys"
+	"github.com/fluxcd/pkg/tar"
+
+	"github.com/fluxcd/flux2/v2/pkg/manifestgen/kustomization"
 )
 
 func fetch(ctx context.Context, url, version, dir string) error {
@@ -44,7 +46,7 @@ func fetch(ctx context.Context, url, version, dir string) error {
 	}
 
 	// download
-	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
+	resp, err := cleanhttp.DefaultClient().Do(req.WithContext(ctx))
 	if err != nil {
 		return fmt.Errorf("failed to download manifests.tar.gz from %s, error: %w", ghURL, err)
 	}
@@ -56,7 +58,7 @@ func fetch(ctx context.Context, url, version, dir string) error {
 	}
 
 	// extract
-	if _, err = untar.Untar(resp.Body, dir); err != nil {
+	if err = tar.Untar(resp.Body, dir, tar.WithMaxUntarSize(-1)); err != nil {
 		return fmt.Errorf("failed to untar manifests.tar.gz from %s, error: %w", ghURL, err)
 	}
 

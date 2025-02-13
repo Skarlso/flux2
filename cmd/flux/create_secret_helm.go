@@ -25,8 +25,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 
-	"github.com/fluxcd/flux2/internal/utils"
-	"github.com/fluxcd/flux2/pkg/manifestgen/sourcesecret"
+	"github.com/fluxcd/flux2/v2/internal/utils"
+	"github.com/fluxcd/flux2/v2/pkg/manifestgen/sourcesecret"
 )
 
 var createSecretHelmCmd = &cobra.Command{
@@ -41,15 +41,8 @@ var createSecretHelmCmd = &cobra.Command{
     --export > repo-auth.yaml
 
   sops --encrypt --encrypted-regex '^(data|stringData)$' \
-    --in-place repo-auth.yaml
+    --in-place repo-auth.yaml`,
 
-  # Create a Helm authentication secret using a custom TLS cert
-  flux create secret helm repo-auth \
-    --username=username \
-    --password=password \
-    --cert-file=./cert.crt \
-    --key-file=./key.crt \
-    --ca-file=./ca.crt`,
 	RunE: createSecretHelmCmdRun,
 }
 
@@ -62,9 +55,13 @@ type secretHelmFlags struct {
 var secretHelmArgs secretHelmFlags
 
 func init() {
-	createSecretHelmCmd.Flags().StringVarP(&secretHelmArgs.username, "username", "u", "", "basic authentication username")
-	createSecretHelmCmd.Flags().StringVarP(&secretHelmArgs.password, "password", "p", "", "basic authentication password")
-	initSecretTLSFlags(createSecretHelmCmd.Flags(), &secretHelmArgs.secretTLSFlags)
+	flags := createSecretHelmCmd.Flags()
+	flags.StringVarP(&secretHelmArgs.username, "username", "u", "", "basic authentication username")
+	flags.StringVarP(&secretHelmArgs.password, "password", "p", "", "basic authentication password")
+	flags.StringVar(&secretHelmArgs.tlsCrtFile, "tls-crt-file", "", "TLS authentication cert file path")
+	flags.StringVar(&secretHelmArgs.tlsKeyFile, "tls-key-file", "", "TLS authentication key file path")
+	flags.StringVar(&secretHelmArgs.caCrtFile, "ca-crt-file", "", "TLS authentication CA file path")
+
 	createSecretCmd.AddCommand(createSecretHelmCmd)
 }
 
@@ -77,20 +74,20 @@ func createSecretHelmCmdRun(cmd *cobra.Command, args []string) error {
 	}
 
 	caBundle := []byte{}
-	if secretHelmArgs.caFile != "" {
+	if secretHelmArgs.caCrtFile != "" {
 		var err error
-		caBundle, err = os.ReadFile(secretHelmArgs.caFile)
+		caBundle, err = os.ReadFile(secretHelmArgs.caCrtFile)
 		if err != nil {
 			return fmt.Errorf("unable to read TLS CA file: %w", err)
 		}
 	}
 
 	var certFile, keyFile []byte
-	if secretHelmArgs.certFile != "" && secretHelmArgs.keyFile != "" {
-		if certFile, err = os.ReadFile(secretHelmArgs.certFile); err != nil {
+	if secretHelmArgs.tlsCrtFile != "" && secretHelmArgs.tlsKeyFile != "" {
+		if certFile, err = os.ReadFile(secretHelmArgs.tlsCrtFile); err != nil {
 			return fmt.Errorf("failed to read cert file: %w", err)
 		}
-		if keyFile, err = os.ReadFile(secretHelmArgs.keyFile); err != nil {
+		if keyFile, err = os.ReadFile(secretHelmArgs.tlsKeyFile); err != nil {
 			return fmt.Errorf("failed to read key file: %w", err)
 		}
 	}
@@ -101,9 +98,9 @@ func createSecretHelmCmdRun(cmd *cobra.Command, args []string) error {
 		Labels:    labels,
 		Username:  secretHelmArgs.username,
 		Password:  secretHelmArgs.password,
-		CAFile:    caBundle,
-		CertFile:  certFile,
-		KeyFile:   keyFile,
+		CACrt:     caBundle,
+		TLSCrt:    certFile,
+		TLSKey:    keyFile,
 	}
 	secret, err := sourcesecret.Generate(opts)
 	if err != nil {

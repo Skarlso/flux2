@@ -26,41 +26,38 @@ import (
 	"github.com/fluxcd/pkg/git/gogit"
 	"github.com/spf13/cobra"
 
-	"github.com/fluxcd/flux2/internal/flags"
-	"github.com/fluxcd/flux2/internal/utils"
-	"github.com/fluxcd/flux2/pkg/bootstrap"
-	"github.com/fluxcd/flux2/pkg/bootstrap/provider"
-	"github.com/fluxcd/flux2/pkg/manifestgen"
-	"github.com/fluxcd/flux2/pkg/manifestgen/install"
-	"github.com/fluxcd/flux2/pkg/manifestgen/sourcesecret"
-	"github.com/fluxcd/flux2/pkg/manifestgen/sync"
+	"github.com/fluxcd/flux2/v2/internal/flags"
+	"github.com/fluxcd/flux2/v2/internal/utils"
+	"github.com/fluxcd/flux2/v2/pkg/bootstrap"
+	"github.com/fluxcd/flux2/v2/pkg/bootstrap/provider"
+	"github.com/fluxcd/flux2/v2/pkg/manifestgen"
+	"github.com/fluxcd/flux2/v2/pkg/manifestgen/install"
+	"github.com/fluxcd/flux2/v2/pkg/manifestgen/sourcesecret"
+	"github.com/fluxcd/flux2/v2/pkg/manifestgen/sync"
 )
 
 var bootstrapBServerCmd = &cobra.Command{
 	Use:   "bitbucket-server",
-	Short: "Bootstrap toolkit components in a Bitbucket Server repository",
+	Short: "Deploy Flux on a cluster connected to a Bitbucket Server repository",
 	Long: `The bootstrap bitbucket-server command creates the Bitbucket Server repository if it doesn't exists and
-commits the toolkit components manifests to the master branch.
+commits the Flux manifests to the master branch.
 Then it configures the target cluster to synchronize with the repository.
-If the toolkit components are present on the cluster,
+If the Flux components are present on the cluster,
 the bootstrap command will perform an upgrade if needed.`,
 	Example: `  # Create a Bitbucket Server API token and export it as an env var
   export BITBUCKET_TOKEN=<my-token>
 
   # Run bootstrap for a private repository using HTTPS token authentication
-  flux bootstrap bitbucket-server --owner=<project> --username=<user> --repository=<repository name> --hostname=<domain> --token-auth
+  flux bootstrap bitbucket-server --owner=<project> --username=<user> --repository=<repository name> --hostname=<domain> --token-auth --path=clusters/my-cluster
 
   # Run bootstrap for a private repository using SSH authentication
-  flux bootstrap bitbucket-server --owner=<project> --username=<user> --repository=<repository name> --hostname=<domain>
-
-  # Run bootstrap for a repository path
-  flux bootstrap bitbucket-server --owner=<project> --username=<user> --repository=<repository name> --path=dev-cluster --hostname=<domain>
+  flux bootstrap bitbucket-server --owner=<project> --username=<user> --repository=<repository name> --hostname=<domain> --path=clusters/my-cluster
 
   # Run bootstrap for a public repository on a personal account
-  flux bootstrap bitbucket-server --owner=<user> --repository=<repository name> --private=false --personal --hostname=<domain> --token-auth
+  flux bootstrap bitbucket-server --owner=<user> --repository=<repository name> --private=false --personal --hostname=<domain> --token-auth --path=clusters/my-cluster
 
-  # Run bootstrap for a an existing repository with a branch named main
-  flux bootstrap bitbucket-server --owner=<project> --username=<user> --repository=<repository name> --branch=main --hostname=<domain> --token-auth`,
+  # Run bootstrap for an existing repository with a branch named main
+  flux bootstrap bitbucket-server --owner=<project> --username=<user> --repository=<repository name> --branch=main --hostname=<domain> --token-auth --path=clusters/my-cluster`,
 	RunE: bootstrapBServerCmdRun,
 }
 
@@ -125,6 +122,13 @@ func bootstrapBServerCmdRun(cmd *cobra.Command, args []string) error {
 	kubeClient, err := utils.KubeClient(kubeconfigArgs, kubeclientOptions)
 	if err != nil {
 		return err
+	}
+
+	if !bootstrapArgs.force {
+		err = confirmBootstrap(ctx, kubeClient)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Manifest base
@@ -192,6 +196,7 @@ func bootstrapBServerCmdRun(cmd *cobra.Command, args []string) error {
 		Namespace:              *kubeconfigArgs.Namespace,
 		Components:             bootstrapComponents(),
 		Registry:               bootstrapArgs.registry,
+		RegistryCredential:     bootstrapArgs.registryCredential,
 		ImagePullSecret:        bootstrapArgs.imagePullSecret,
 		WatchAllNamespaces:     bootstrapArgs.watchAllNamespaces,
 		NetworkPolicy:          bootstrapArgs.networkPolicy,
@@ -221,7 +226,7 @@ func bootstrapBServerCmdRun(cmd *cobra.Command, args []string) error {
 			secretOpts.Username = bServerArgs.username
 		}
 		secretOpts.Password = bitbucketToken
-		secretOpts.CAFile = caBundle
+		secretOpts.CACrt = caBundle
 	} else {
 		keypair, err := sourcesecret.LoadKeyPairFromPath(bootstrapArgs.privateKeyFile, gitArgs.password)
 		if err != nil {
@@ -247,7 +252,6 @@ func bootstrapBServerCmdRun(cmd *cobra.Command, args []string) error {
 		Secret:            bootstrapArgs.secretName,
 		TargetPath:        bServerArgs.path.ToSlash(),
 		ManifestFile:      sync.MakeDefaultOptions().ManifestFile,
-		GitImplementation: sourceGitArgs.gitImplementation.String(),
 		RecurseSubmodules: bootstrapArgs.recurseSubmodules,
 	}
 

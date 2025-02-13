@@ -32,8 +32,8 @@ import (
 
 	"github.com/fluxcd/pkg/apis/meta"
 
-	"github.com/fluxcd/flux2/internal/utils"
-	"github.com/fluxcd/flux2/pkg/printers"
+	"github.com/fluxcd/flux2/v2/internal/utils"
+	"github.com/fluxcd/flux2/v2/pkg/printers"
 )
 
 type deriveType func(runtime.Object) (summarisable, error)
@@ -59,13 +59,14 @@ func (m typeMap) execute(t string, obj runtime.Object) (summarisable, error) {
 var getCmd = &cobra.Command{
 	Use:   "get",
 	Short: "Get the resources and their status",
-	Long:  "The get sub-commands print the statuses of Flux resources.",
+	Long:  `The get sub-commands print the statuses of Flux resources.`,
 }
 
 type GetFlags struct {
 	allNamespaces  bool
 	noHeader       bool
 	statusSelector string
+	labelSelector  string
 	watch          bool
 }
 
@@ -78,6 +79,8 @@ func init() {
 	getCmd.PersistentFlags().BoolVarP(&getArgs.watch, "watch", "w", false, "After listing/getting the requested object, watch for changes.")
 	getCmd.PersistentFlags().StringVar(&getArgs.statusSelector, "status-selector", "",
 		"specify the status condition name and the desired state to filter the get result, e.g. ready=false")
+	getCmd.PersistentFlags().StringVarP(&getArgs.labelSelector, "label-selector", "l", "",
+		"filter objects by label selector")
 	rootCmd.AddCommand(getCmd)
 }
 
@@ -150,6 +153,21 @@ func (get getCommand) run(cmd *cobra.Command, args []string) error {
 		listOpts = append(listOpts, client.MatchingFields{"metadata.name": args[0]})
 	}
 
+	if getArgs.labelSelector != "" {
+		label, err := metav1.ParseToLabelSelector(getArgs.labelSelector)
+		if err != nil {
+			return fmt.Errorf("unable to parse label selector: %w", err)
+		}
+
+		sel, err := metav1.LabelSelectorAsSelector(label)
+		if err != nil {
+			return err
+		}
+		listOpts = append(listOpts, client.MatchingLabelsSelector{
+			Selector: sel,
+		})
+	}
+
 	getAll := cmd.Use == "all"
 
 	if getArgs.watch {
@@ -158,14 +176,24 @@ func (get getCommand) run(cmd *cobra.Command, args []string) error {
 
 	err = kubeClient.List(ctx, get.list.asClientList(), listOpts...)
 	if err != nil {
+		if getAll && apimeta.IsNoMatchError(err) {
+			return nil
+		}
 		return err
 	}
 
 	if get.list.len() == 0 {
 		if len(args) > 0 {
-			logger.Failuref("%s object '%s' not found in '%s' namespace", get.kind, args[0], *kubeconfigArgs.Namespace)
+			logger.Failuref("%s object '%s' not found in %s namespace",
+				get.kind,
+				args[0],
+				namespaceNameOrAny(getArgs.allNamespaces, *kubeconfigArgs.Namespace),
+			)
 		} else if !getAll {
-			logger.Failuref("no %s objects found in %s namespace", get.kind, *kubeconfigArgs.Namespace)
+			logger.Failuref("no %s objects found in %s namespace",
+				get.kind,
+				namespaceNameOrAny(getArgs.allNamespaces, *kubeconfigArgs.Namespace),
+			)
 		}
 		return nil
 	}
@@ -190,6 +218,13 @@ func (get getCommand) run(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func namespaceNameOrAny(allNamespaces bool, namespaceName string) string {
+	if allNamespaces {
+		return "any"
+	}
+	return fmt.Sprintf("%q", namespaceName)
 }
 
 func getRowsToPrint(getAll bool, list summarisable) ([][]string, error) {

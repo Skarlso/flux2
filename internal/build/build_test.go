@@ -17,10 +17,16 @@ limitations under the License.
 package build
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
+	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/google/go-cmp/cmp"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/kustomize/api/resource"
 	"sigs.k8s.io/kustomize/kyaml/yaml"
 )
@@ -184,6 +190,12 @@ func Test_unMarshallKustomization(t *testing.T) {
 			wantErr:     true,
 			errString:   "failed find kustomization with name",
 		},
+		{
+			name:        "yaml containing other resource with same name as kustomization",
+			localKsFile: "testdata/local-kustomization/invalid-resource.yaml",
+			wantErr:     true,
+			errString:   "failed find kustomization with name",
+		},
 	}
 
 	b := &Builder{
@@ -212,6 +224,380 @@ func Test_unMarshallKustomization(t *testing.T) {
 					t.Errorf("expected error '%s' to contain string '%s'", err.Error(), tt.errString)
 				}
 			}
+		})
+	}
+}
+
+func Test_ResolveKustomization(t *testing.T) {
+	tests := []struct {
+		name              string
+		localKsFile       string
+		liveKustomization *kustomizev1.Kustomization
+		dryrun            bool
+	}{
+		{
+			name:        "valid kustomization",
+			localKsFile: "testdata/local-kustomization/valid.yaml",
+		},
+		{
+			name:        "local and live kustomization",
+			localKsFile: "testdata/local-kustomization/valid.yaml",
+			liveKustomization: &kustomizev1.Kustomization{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "podinfo",
+					Namespace: "flux-system",
+				},
+				Spec: kustomizev1.KustomizationSpec{
+					Interval: metav1.Duration{Duration: time.Minute * 5},
+					Path:     "./testdata/local-kustomization/valid.yaml",
+				},
+				Status: kustomizev1.KustomizationStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   meta.ReadyCondition,
+							Status: metav1.ConditionTrue,
+						},
+					},
+					Inventory: &kustomizev1.ResourceInventory{
+						Entries: []kustomizev1.ResourceRef{
+							{
+								ID:      "flux-system_podinfo_v1_service_podinfo",
+								Version: "v1",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name:        "local and live kustomization with dryrun",
+			localKsFile: "testdata/local-kustomization/valid.yaml",
+			liveKustomization: &kustomizev1.Kustomization{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "podinfo",
+					Namespace: "flux-system",
+				},
+				Spec: kustomizev1.KustomizationSpec{
+					Interval: metav1.Duration{Duration: time.Minute * 5},
+					Path:     "./testdata/local-kustomization/valid.yaml",
+				},
+				Status: kustomizev1.KustomizationStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   meta.ReadyCondition,
+							Status: metav1.ConditionTrue,
+						},
+					},
+					Inventory: &kustomizev1.ResourceInventory{
+						Entries: []kustomizev1.ResourceRef{
+							{
+								ID:      "flux-system_podinfo_v1_service_podinfo",
+								Version: "v1",
+							},
+						},
+					},
+				},
+			},
+			dryrun: true,
+		},
+		{
+			name: "live kustomization",
+			liveKustomization: &kustomizev1.Kustomization{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "podinfo",
+					Namespace: "flux-system",
+				},
+				Spec: kustomizev1.KustomizationSpec{
+					Interval: metav1.Duration{Duration: time.Minute * 5},
+					Path:     "./testdata/local-kustomization/valid.yaml",
+				},
+				Status: kustomizev1.KustomizationStatus{
+					Conditions: []metav1.Condition{
+						{
+							Type:   meta.ReadyCondition,
+							Status: metav1.ConditionTrue,
+						},
+					},
+					Inventory: &kustomizev1.ResourceInventory{
+						Entries: []kustomizev1.ResourceRef{
+							{
+								ID:      "flux-system_podinfo_v1_service_podinfo",
+								Version: "v1",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	b := &Builder{
+		name:      "podinfo",
+		namespace: "flux-system",
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b.kustomizationFile = tt.localKsFile
+			b.dryRun = tt.dryrun
+			ks, err := b.resolveKustomization(tt.liveKustomization)
+			if err != nil {
+				t.Errorf("unexpected err '%s'", err)
+			}
+			if !tt.dryrun {
+				if b.kustomizationFile == "" {
+					if cmp.Diff(ks, tt.liveKustomization) != "" {
+						t.Errorf("expected kustomization to match live kustomization")
+					}
+				} else {
+					if tt.liveKustomization != nil && cmp.Diff(ks.Status, tt.liveKustomization.Status) != "" {
+						t.Errorf("expected kustomization status to match live kustomization status")
+					}
+				}
+			} else {
+				if ks.Status.Inventory != nil {
+					fmt.Println(ks.Status.Inventory)
+					t.Errorf("expected kustomization status to be nil")
+				}
+			}
+		})
+	}
+}
+
+func Test_isKustomization(t *testing.T) {
+	tests := []struct {
+		name     string
+		expected bool
+		object   *unstructured.Unstructured
+	}{
+		{
+			name: "flux kustomization",
+			object: &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+					"kind":       "Kustomization",
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "other kustomization",
+			object: &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "kustomize.config.k8s.io/v1beta1",
+					"kind":       "Kustomization",
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "wrong kind",
+			object: &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+					"kind":       "ConfigMap",
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "wrong object",
+			object: &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "v1",
+					"kind":       "ConfigMap",
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual := isKustomization(tt.object)
+			if actual != tt.expected {
+				t.Fatalf("got '%v', want '%v'", actual, tt.expected)
+			}
+		})
+	}
+}
+
+func Test_kustomizationsEqual(t *testing.T) {
+	tests := []struct {
+		name           string
+		kustomization1 *kustomizev1.Kustomization
+		kustomization2 *kustomizev1.Kustomization
+		expected       bool
+	}{
+		{
+			name: "equal",
+			kustomization1: &kustomizev1.Kustomization{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "podinfo",
+					Namespace: "flux-system",
+				},
+			},
+			kustomization2: &kustomizev1.Kustomization{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "podinfo",
+					Namespace: "flux-system",
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "wrong name",
+			kustomization1: &kustomizev1.Kustomization{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "podinfo",
+					Namespace: "flux-system",
+				},
+			},
+			kustomization2: &kustomizev1.Kustomization{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-app",
+					Namespace: "flux-system",
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "wrong namespace",
+			kustomization1: &kustomizev1.Kustomization{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "podinfo",
+					Namespace: "flux-system",
+				},
+			},
+			kustomization2: &kustomizev1.Kustomization{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "podinfo",
+					Namespace: "my-ns",
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "wrong name and namespace",
+			kustomization1: &kustomizev1.Kustomization{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "podinfo",
+					Namespace: "flux-system",
+				},
+			},
+			kustomization2: &kustomizev1.Kustomization{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-app",
+					Namespace: "my-ns",
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual := kustomizationsEqual(tt.kustomization1, tt.kustomization2)
+			if actual != tt.expected {
+				t.Fatalf("got '%v', want '%v'", actual, tt.expected)
+			}
+		})
+	}
+}
+
+func Test_kustomizationPath(t *testing.T) {
+	tests := []struct {
+		name          string
+		kustomization *kustomizev1.Kustomization
+		expected      string
+		wantErr       bool
+		errString     string
+	}{
+		{
+			name: "full repo",
+			kustomization: &kustomizev1.Kustomization{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-app",
+					Namespace: "flux-system",
+				},
+				Spec: kustomizev1.KustomizationSpec{
+					Path: "my-path",
+					SourceRef: kustomizev1.CrossNamespaceSourceReference{
+						Kind:      "GitRepository",
+						Name:      "my-repo",
+						Namespace: "flux-system",
+					},
+				},
+			},
+			expected: "path/to/local/git/my-path",
+		},
+		{
+			name: "repo without namespace",
+			kustomization: &kustomizev1.Kustomization{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-app",
+					Namespace: "flux-system",
+				},
+				Spec: kustomizev1.KustomizationSpec{
+					Path: "my-path",
+					SourceRef: kustomizev1.CrossNamespaceSourceReference{
+						Kind:      "GitRepository",
+						Name:      "my-repo",
+						Namespace: "",
+					},
+				},
+			},
+			expected: "path/to/local/git/my-path",
+		},
+		{
+			name: "repo not found",
+			kustomization: &kustomizev1.Kustomization{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-app",
+					Namespace: "flux-system",
+				},
+				Spec: kustomizev1.KustomizationSpec{
+					Path: "my-path",
+					SourceRef: kustomizev1.CrossNamespaceSourceReference{
+						Kind:      "GitRepository",
+						Name:      "my-repo",
+						Namespace: "my-ns",
+					},
+				},
+			},
+			wantErr:   true,
+			errString: "cannot get local path",
+		},
+	}
+
+	b := &Builder{
+		name:      "podinfo",
+		namespace: "flux-system",
+		localSources: map[string]string{
+			"GitRepository/flux-system/my-repo": "./path/to/local/git",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual, err := b.kustomizationPath(tt.kustomization)
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("unexpected err '%s'", err)
+				}
+
+				if actual != tt.expected {
+					t.Errorf("got '%v', want '%v'", actual, tt.expected)
+				}
+			} else {
+				if err == nil {
+					t.Fatal("expected error but got nil")
+				}
+
+				if !strings.Contains(err.Error(), tt.errString) {
+					t.Errorf("expected error '%s' to contain string '%s'", err.Error(), tt.errString)
+				}
+			}
+
 		})
 	}
 }

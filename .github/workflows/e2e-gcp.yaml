@@ -1,0 +1,104 @@
+name: e2e-gcp
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *'
+  push:
+    branches:
+      - main
+    paths:
+      - 'tests/**'
+      - '.github/workflows/e2e-gcp.yaml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'tests/**'
+      - '.github/workflows/e2e-gcp.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-gcp:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: ./tests/integration
+    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.actor != 'dependabot[bot]'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Setup Go
+        uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        with:
+          go-version: 1.23.x
+          cache-dependency-path: tests/integration/go.sum
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+      - name: Setup Flux CLI
+        run: make build
+        working-directory: ./
+      - name: Setup SOPS
+        run: |
+          mkdir -p $HOME/.local/bin
+          wget -O $HOME/.local/bin/sops https://github.com/mozilla/sops/releases/download/v$SOPS_VER/sops-v$SOPS_VER.linux
+          chmod +x $HOME/.local/bin/sops
+        env:
+          SOPS_VER: 3.7.1
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935 # v2.1.8
+        id: 'auth'
+        with:
+          credentials_json: '${{ secrets.FLUX2_E2E_GOOGLE_CREDENTIALS }}'
+          token_format: 'access_token'
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a # v2.1.4
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@4574d27a4764455b42196d70a065bc6853246a25 # v3.4.0
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca # v3.9.0
+      - name: Log into us-central1-docker.pkg.dev
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: us-central1-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+      - name: Set dynamic variables in .env
+        run: |
+          cat > .env <<EOF
+          export TF_VAR_tags='{ "environment"="github", "ci"="true", "repo"="flux2", "createdat"="$(date -u +x%Y-%m-%d_%Hh%Mm%Ss)" }'
+          EOF
+      - name: Print .env for dynamic tag value reference
+        run: cat .env
+      - name: Run GCP e2e tests
+        env:
+          TF_VAR_gcp_project_id: ${{ vars.TF_VAR_gcp_project_id }}
+          TF_VAR_gcp_region: ${{ vars.TF_VAR_gcp_region }}
+          TF_VAR_gcp_zone: ${{ vars.TF_VAR_gcp_zone }}
+          TF_VAR_gcp_email: ${{ secrets.TF_VAR_gcp_email }}
+          TF_VAR_gcp_keyring: ${{ secrets.TF_VAR_gcp_keyring }}
+          TF_VAR_gcp_crypto_key: ${{ secrets.TF_VAR_gcp_crypto_key }}
+          GITREPO_SSH_CONTENTS: ${{ secrets.GCP_GITREPO_SSH_CONTENTS }}
+          GITREPO_SSH_PUB_CONTENTS: ${{ secrets.GCP_GITREPO_SSH_PUB_CONTENTS }}
+        run: |
+          source .env
+          mkdir -p ./build/ssh
+          touch ./build/ssh/key
+          echo $GITREPO_SSH_CONTENTS | base64 -d > build/ssh/key
+          export GITREPO_SSH_PATH=build/ssh/key
+          touch ./build/ssh/key.pub
+          echo $GITREPO_SSH_PUB_CONTENTS | base64 -d > ./build/ssh/key.pub
+          export GITREPO_SSH_PUB_PATH=build/ssh/key.pub
+          make test-gcp
+      - name: Ensure resource cleanup
+        if: ${{ always() }}
+        env:
+          TF_VAR_gcp_project_id: ${{ vars.TF_VAR_gcp_project_id }}
+          TF_VAR_gcp_region: ${{ vars.TF_VAR_gcp_region }}
+          TF_VAR_gcp_zone: ${{ vars.TF_VAR_gcp_zone }}
+          TF_VAR_gcp_email: ${{ secrets.TF_VAR_gcp_email }}
+          TF_VAR_gcp_keyring: ${{ secrets.TF_VAR_gcp_keyring }}
+          TF_VAR_gcp_crypto_key: ${{ secrets.TF_VAR_gcp_crypto_key }}
+        run: source .env && make destroy-gcp

@@ -2,8 +2,10 @@
 
 [![release](https://img.shields.io/github/release/fluxcd/flux2/all.svg)](https://github.com/fluxcd/flux2/releases)
 [![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/4782/badge)](https://bestpractices.coreinfrastructure.org/projects/4782)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/fluxcd/flux2/badge)](https://scorecard.dev/viewer/?uri=github.com/fluxcd/flux2)
 [![FOSSA Status](https://app.fossa.com/api/projects/custom%2B162%2Fgithub.com%2Ffluxcd%2Fflux2.svg?type=shield)](https://app.fossa.com/projects/custom%2B162%2Fgithub.com%2Ffluxcd%2Fflux2?ref=badge_shield)
 [![Artifact HUB](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/flux2)](https://artifacthub.io/packages/helm/fluxcd-community/flux2)
+[![SLSA 3](https://slsa.dev/images/gh-badge-level3.svg)](https://fluxcd.io/flux/security/slsa-assessment)
 
 Flux is a tool for keeping Kubernetes clusters in sync with sources of
 configuration (like Git repositories and OCI artifacts),
@@ -19,7 +21,7 @@ Flux v2 is constructed with the [GitOps Toolkit](#gitops-toolkit), a
 set of composable APIs and specialized tools for building Continuous
 Delivery on top of Kubernetes.
 
-Flux is a Cloud Native Computing Foundation ([CNCF](https://www.cncf.io/)) project, used in
+Flux is a Cloud Native Computing Foundation ([CNCF](https://www.cncf.io/)) graduated project, used in
 production by various [organisations](https://fluxcd.io/adopters) and [cloud providers](https://fluxcd.io/ecosystem).
 
 ## Quickstart and documentation
@@ -31,7 +33,7 @@ For more comprehensive documentation, see the following guides:
 - [Ways of structuring your repositories](https://fluxcd.io/flux/guides/repository-structure/)
 - [Manage Helm Releases](https://fluxcd.io/flux/guides/helmreleases/)
 - [Automate image updates to Git](https://fluxcd.io/flux/guides/image-update/)  
-- [Manage Kubernetes secrets with Mozilla SOPS](https://fluxcd.io/flux/guides/mozilla-sops/)  
+- [Manage Kubernetes secrets with Flux and SOPS](https://fluxcd.io/flux/guides/mozilla-sops/)  
 
 If you need help, please refer to our **[Support page](https://fluxcd.io/support/)**.
 
@@ -42,7 +44,7 @@ runtime for Flux v2. The APIs comprise Kubernetes custom resources,
 which can be created and updated by a cluster user, or by other
 automation tooling.
 
-![overview](docs/_files/gitops-toolkit.png)
+![overview](https://raw.githubusercontent.com/fluxcd/flux2/main/docs/diagrams/fluxcd-controllers.png)
 
 You can use the toolkit to extend Flux, or to build your own systems
 for continuous delivery -- see [the developer
@@ -57,18 +59,18 @@ guides](https://fluxcd.io/flux/gitops-toolkit/source-watcher/).
     - [HelmChart CRD](https://fluxcd.io/flux/components/source/helmcharts/)
     - [Bucket CRD](https://fluxcd.io/flux/components/source/buckets/)
 - [Kustomize Controller](https://fluxcd.io/flux/components/kustomize/)
-    - [Kustomization CRD](https://fluxcd.io/flux/components/kustomize/kustomization/)
+    - [Kustomization CRD](https://fluxcd.io/flux/components/kustomize/kustomizations/)
 - [Helm Controller](https://fluxcd.io/flux/components/helm/)
     - [HelmRelease CRD](https://fluxcd.io/flux/components/helm/helmreleases/)
 - [Notification Controller](https://fluxcd.io/flux/components/notification/)
-    - [Provider CRD](https://fluxcd.io/flux/components/notification/provider/)
-    - [Alert CRD](https://fluxcd.io/flux/components/notification/alert/)
-    - [Receiver CRD](https://fluxcd.io/flux/components/notification/receiver/)
+    - [Provider CRD](https://fluxcd.io/flux/components/notification/providers/)
+    - [Alert CRD](https://fluxcd.io/flux/components/notification/alerts/)
+    - [Receiver CRD](https://fluxcd.io/flux/components/notification/receivers/)
 - [Image Automation Controllers](https://fluxcd.io/flux/components/image/)
   - [ImageRepository CRD](https://fluxcd.io/flux/components/image/imagerepositories/)
   - [ImagePolicy CRD](https://fluxcd.io/flux/components/image/imagepolicies/)
   - [ImageUpdateAutomation CRD](https://fluxcd.io/flux/components/image/imageupdateautomations/)
-  
+
 ## Community
 
 Need help or want to contribute? Please see the links below. The Flux project is always looking for

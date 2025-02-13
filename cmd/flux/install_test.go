@@ -25,9 +25,7 @@ func TestInstall(t *testing.T) {
 	// Given that this test uses an invalid namespace, it ensures
 	// to restore whatever value it had previously.
 	currentNamespace := *kubeconfigArgs.Namespace
-	defer func() {
-		*kubeconfigArgs.Namespace = currentNamespace
-	}()
+	t.Cleanup(func() { *kubeconfigArgs.Namespace = currentNamespace })
 
 	tests := []struct {
 		name   string
@@ -38,6 +36,16 @@ func TestInstall(t *testing.T) {
 			name:   "invalid namespace",
 			args:   "install --namespace='@#[]'",
 			assert: assertError("namespace must be a valid DNS label: \"@#[]\""),
+		},
+		{
+			name:   "invalid sub-command",
+			args:   "install unexpectedPosArg --namespace=example",
+			assert: assertError(`unknown command "unexpectedPosArg" for "flux install"`),
+		},
+		{
+			name:   "missing image pull secret",
+			args:   "install --registry-creds=fluxcd:test",
+			assert: assertError(`--registry-creds requires --image-pull-secret to be set`),
 		},
 	}
 

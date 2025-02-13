@@ -21,16 +21,17 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/fluxcd/flux2/internal/flags"
 	oci "github.com/fluxcd/pkg/oci/client"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1beta2"
 	"github.com/spf13/cobra"
+
+	"github.com/fluxcd/flux2/v2/internal/flags"
 )
 
 var diffArtifactCmd = &cobra.Command{
 	Use:   "artifact",
 	Short: "Diff Artifact",
-	Long:  `The diff artifact command computes the diff between the remote OCI artifact and a local directory or file`,
+	Long:  withPreviewNote(`The diff artifact command computes the diff between the remote OCI artifact and a local directory or file`),
 	Example: `# Check if local files differ from remote
 flux diff artifact oci://ghcr.io/stefanprodan/manifests:podinfo:6.2.0 --path=./kustomize`,
 	RunE: diffArtifactCmdRun,
@@ -81,7 +82,7 @@ func diffArtifactCmdRun(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), rootArgs.timeout)
 	defer cancel()
 
-	ociClient := oci.NewLocalClient()
+	ociClient := oci.NewClient(oci.DefaultOptions())
 
 	if diffArtifactArgs.provider.String() == sourcev1.GenericOCIProvider && diffArtifactArgs.creds != "" {
 		logger.Actionf("logging in to registry with credentials")

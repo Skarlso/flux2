@@ -22,13 +22,13 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	imagev1 "github.com/fluxcd/image-reflector-controller/api/v1beta1"
+	imagev1 "github.com/fluxcd/image-reflector-controller/api/v1beta2"
 )
 
 var getImagePolicyCmd = &cobra.Command{
 	Use:   "policy",
 	Short: "Get ImagePolicy status",
-	Long:  "The get image policy command prints the status of ImagePolicy objects.",
+	Long:  withPreviewNote("The get image policy command prints the status of ImagePolicy objects."),
 	Example: `  # List all image policies and their status
   flux get image policy
 

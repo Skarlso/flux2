@@ -31,9 +31,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
+	"github.com/fluxcd/pkg/auth/github"
 	"github.com/fluxcd/pkg/ssh"
 
-	"github.com/fluxcd/flux2/pkg/manifestgen"
+	"github.com/fluxcd/flux2/v2/pkg/manifestgen"
 )
 
 const defaultSSHPort = 22
@@ -83,13 +84,13 @@ func Generate(options Options) (*manifestgen.Manifest, error) {
 
 	var dockerCfgJson []byte
 	if options.Registry != "" {
-		dockerCfgJson, err = generateDockerConfigJson(options.Registry, options.Username, options.Password)
+		dockerCfgJson, err = GenerateDockerConfigJson(options.Registry, options.Username, options.Password)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate json for docker config: %w", err)
 		}
 	}
 
-	secret := buildSecret(keypair, hostKey, options.CAFile, options.CertFile, options.KeyFile, dockerCfgJson, options)
+	secret := buildSecret(keypair, hostKey, dockerCfgJson, options)
 	b, err := yaml.Marshal(secret)
 	if err != nil {
 		return nil, err
@@ -130,7 +131,7 @@ func LoadKeyPair(privateKey []byte, password string) (*ssh.KeyPair, error) {
 	}, nil
 }
 
-func buildSecret(keypair *ssh.KeyPair, hostKey, caFile, certFile, keyFile, dockerCfg []byte, options Options) (secret corev1.Secret) {
+func buildSecret(keypair *ssh.KeyPair, hostKey, dockerCfg []byte, options Options) (secret corev1.Secret) {
 	secret.TypeMeta = metav1.TypeMeta{
 		APIVersion: "v1",
 		Kind:       "Secret",
@@ -148,18 +149,26 @@ func buildSecret(keypair *ssh.KeyPair, hostKey, caFile, certFile, keyFile, docke
 		return
 	}
 
+	if options.Address != "" {
+		secret.StringData[AddressSecretKey] = options.Address
+	}
+
 	if options.Username != "" && options.Password != "" {
 		secret.StringData[UsernameSecretKey] = options.Username
 		secret.StringData[PasswordSecretKey] = options.Password
 	}
-
-	if len(caFile) != 0 {
-		secret.StringData[CAFileSecretKey] = string(caFile)
+	if options.BearerToken != "" {
+		secret.StringData[BearerTokenKey] = options.BearerToken
 	}
 
-	if len(certFile) != 0 && len(keyFile) != 0 {
-		secret.StringData[CertFileSecretKey] = string(certFile)
-		secret.StringData[KeyFileSecretKey] = string(keyFile)
+	if len(options.CACrt) != 0 {
+		secret.StringData[CACrtSecretKey] = string(options.CACrt)
+	}
+
+	if len(options.TLSCrt) != 0 && len(options.TLSKey) != 0 {
+		secret.Type = corev1.SecretTypeTLS
+		secret.StringData[TLSCrtSecretKey] = string(options.TLSCrt)
+		secret.StringData[TLSKeySecretKey] = string(options.TLSKey)
 	}
 
 	if keypair != nil && len(hostKey) != 0 {
@@ -170,6 +179,32 @@ func buildSecret(keypair *ssh.KeyPair, hostKey, caFile, certFile, keyFile, docke
 		if options.Password != "" {
 			secret.StringData[PasswordSecretKey] = string(options.Password)
 		}
+	}
+
+	if len(options.VerificationCrts) != 0 {
+		for _, crts := range options.VerificationCrts {
+			secret.StringData[crts.Name] = string(crts.CACrt)
+		}
+	}
+
+	if len(options.TrustPolicy) != 0 {
+		secret.StringData[TrustPolicyKey] = string(options.TrustPolicy)
+	}
+
+	if options.GitHubAppID != "" {
+		secret.StringData[github.AppIDKey] = options.GitHubAppID
+	}
+
+	if options.GitHubAppInstallationID != "" {
+		secret.StringData[github.AppInstallationIDKey] = options.GitHubAppInstallationID
+	}
+
+	if options.GitHubAppPrivateKey != "" {
+		secret.StringData[github.AppPrivateKey] = options.GitHubAppPrivateKey
+	}
+
+	if options.GitHubAppBaseURL != "" {
+		secret.StringData[github.AppBaseUrlKey] = options.GitHubAppBaseURL
 	}
 
 	return
@@ -214,7 +249,7 @@ func resourceToString(data []byte) string {
 	return string(data)
 }
 
-func generateDockerConfigJson(url, username, password string) ([]byte, error) {
+func GenerateDockerConfigJson(url, username, password string) ([]byte, error) {
 	cred := fmt.Sprintf("%s:%s", username, password)
 	auth := base64.StdEncoding.EncodeToString([]byte(cred))
 	cfg := DockerConfigJSON{

@@ -1,5 +1,5 @@
 /*
-Copyright 2020 The Flux authors
+Copyright 2024 The Flux authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,29 +24,30 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fluxcd/flux2/internal/flags"
-	"github.com/fluxcd/flux2/internal/utils"
-	"github.com/fluxcd/pkg/apis/meta"
-	"github.com/fluxcd/pkg/runtime/transform"
-
 	"github.com/spf13/cobra"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
-	helmv2 "github.com/fluxcd/helm-controller/api/v2beta1"
+	helmv2 "github.com/fluxcd/helm-controller/api/v2"
+	"github.com/fluxcd/pkg/apis/meta"
+	"github.com/fluxcd/pkg/runtime/transform"
+	sourcev1 "github.com/fluxcd/source-controller/api/v1"
+	sourcev1b2 "github.com/fluxcd/source-controller/api/v1beta2"
+
+	"github.com/fluxcd/flux2/v2/internal/flags"
+	"github.com/fluxcd/flux2/v2/internal/utils"
 )
 
 var createHelmReleaseCmd = &cobra.Command{
 	Use:     "helmrelease [name]",
 	Aliases: []string{"hr"},
 	Short:   "Create or update a HelmRelease resource",
-	Long:    "The helmrelease create command generates a HelmRelease resource for a given HelmRepository source.",
+	Long:    `The helmrelease create command generates a HelmRelease resource for a given HelmRepository source.`,
 	Example: `  # Create a HelmRelease with a chart from a HelmRepository source
   flux create hr podinfo \
     --interval=10m \
@@ -83,9 +84,9 @@ var createHelmReleaseCmd = &cobra.Command{
 
   # Create a HelmRelease with a custom release name
   flux create hr podinfo \
-    --release-name=podinfo-dev
+    --release-name=podinfo-dev \
     --source=HelmRepository/podinfo \
-    --chart=podinfo \
+    --chart=podinfo
 
   # Create a HelmRelease targeting another namespace than the resource
   flux create hr podinfo \
@@ -105,7 +106,17 @@ var createHelmReleaseCmd = &cobra.Command{
     --source=HelmRepository/podinfo \
     --chart=podinfo \
     --values=./values.yaml \
-    --export > podinfo-release.yaml`,
+    --export > podinfo-release.yaml
+		
+  # Create a HelmRelease using a chart from a HelmChart resource
+  flux create hr podinfo \
+    --namespace=default \
+    --chart-ref=HelmChart/podinfo.flux-system \
+
+  # Create a HelmRelease using a chart from an OCIRepository resource
+  flux create hr podinfo \
+    --namespace=default \
+    --chart-ref=OCIRepository/podinfo.flux-system`,
 	RunE: createHelmReleaseCmdRun,
 }
 
@@ -115,6 +126,7 @@ type helmReleaseFlags struct {
 	dependsOn           []string
 	chart               string
 	chartVersion        string
+	chartRef            string
 	targetNamespace     string
 	createNamespace     bool
 	valuesFiles         []string
@@ -129,6 +141,8 @@ type helmReleaseFlags struct {
 var helmReleaseArgs helmReleaseFlags
 
 var supportedHelmReleaseValuesFromKinds = []string{"Secret", "ConfigMap"}
+
+var supportedHelmReleaseReferenceKinds = []string{sourcev1b2.OCIRepositoryKind, sourcev1.HelmChartKind}
 
 func init() {
 	createHelmReleaseCmd.Flags().StringVar(&helmReleaseArgs.name, "release-name", "", "name used for the Helm release, defaults to a composition of '[<target-namespace>-]<HelmRelease-name>'")
@@ -145,14 +159,15 @@ func init() {
 	createHelmReleaseCmd.Flags().StringSliceVar(&helmReleaseArgs.valuesFrom, "values-from", nil, "a Kubernetes object reference that contains the values.yaml data key in the format '<kind>/<name>', where kind must be one of: (Secret,ConfigMap)")
 	createHelmReleaseCmd.Flags().Var(&helmReleaseArgs.crds, "crds", helmReleaseArgs.crds.Description())
 	createHelmReleaseCmd.Flags().StringVar(&helmReleaseArgs.kubeConfigSecretRef, "kubeconfig-secret-ref", "", "the name of the Kubernetes Secret that contains a key with the kubeconfig file for connecting to a remote cluster")
+	createHelmReleaseCmd.Flags().StringVar(&helmReleaseArgs.chartRef, "chart-ref", "", "the name of the HelmChart resource to use as source for the HelmRelease, in the format '<kind>/<name>.<namespace>', where kind must be one of: (OCIRepository,HelmChart)")
 	createCmd.AddCommand(createHelmReleaseCmd)
 }
 
 func createHelmReleaseCmdRun(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
-	if helmReleaseArgs.chart == "" {
-		return fmt.Errorf("chart name or path is required")
+	if helmReleaseArgs.chart == "" && helmReleaseArgs.chartRef == "" {
+		return fmt.Errorf("chart or chart-ref is required")
 	}
 
 	sourceLabels, err := parseLabels()
@@ -182,34 +197,47 @@ func createHelmReleaseCmdRun(cmd *cobra.Command, args []string) error {
 				Duration: createArgs.interval,
 			},
 			TargetNamespace: helmReleaseArgs.targetNamespace,
-
-			Chart: helmv2.HelmChartTemplate{
-				Spec: helmv2.HelmChartTemplateSpec{
-					Chart:   helmReleaseArgs.chart,
-					Version: helmReleaseArgs.chartVersion,
-					SourceRef: helmv2.CrossNamespaceObjectReference{
-						Kind:      helmReleaseArgs.source.Kind,
-						Name:      helmReleaseArgs.source.Name,
-						Namespace: helmReleaseArgs.source.Namespace,
-					},
-					ReconcileStrategy: helmReleaseArgs.reconcileStrategy,
-				},
-			},
-			Suspend: false,
+			Suspend:         false,
 		},
 	}
 
-	if helmReleaseArgs.kubeConfigSecretRef != "" {
-		helmRelease.Spec.KubeConfig = &helmv2.KubeConfig{
-			SecretRef: meta.SecretKeyReference{
-				Name: helmReleaseArgs.kubeConfigSecretRef,
+	switch {
+	case helmReleaseArgs.chart != "":
+		helmRelease.Spec.Chart = &helmv2.HelmChartTemplate{
+			Spec: helmv2.HelmChartTemplateSpec{
+				Chart:   helmReleaseArgs.chart,
+				Version: helmReleaseArgs.chartVersion,
+				SourceRef: helmv2.CrossNamespaceObjectReference{
+					Kind:      helmReleaseArgs.source.Kind,
+					Name:      helmReleaseArgs.source.Name,
+					Namespace: helmReleaseArgs.source.Namespace,
+				},
+				ReconcileStrategy: helmReleaseArgs.reconcileStrategy,
 			},
+		}
+		if helmReleaseArgs.chartInterval != 0 {
+			helmRelease.Spec.Chart.Spec.Interval = &metav1.Duration{
+				Duration: helmReleaseArgs.chartInterval,
+			}
+		}
+	case helmReleaseArgs.chartRef != "":
+		kind, name, ns := utils.ParseObjectKindNameNamespace(helmReleaseArgs.chartRef)
+		if kind != sourcev1.HelmChartKind && kind != sourcev1b2.OCIRepositoryKind {
+			return fmt.Errorf("chart reference kind '%s' is not supported, must be one of: %s",
+				kind, strings.Join(supportedHelmReleaseReferenceKinds, ", "))
+		}
+		helmRelease.Spec.ChartRef = &helmv2.CrossNamespaceSourceReference{
+			Kind:      kind,
+			Name:      name,
+			Namespace: ns,
 		}
 	}
 
-	if helmReleaseArgs.chartInterval != 0 {
-		helmRelease.Spec.Chart.Spec.Interval = &metav1.Duration{
-			Duration: helmReleaseArgs.chartInterval,
+	if helmReleaseArgs.kubeConfigSecretRef != "" {
+		helmRelease.Spec.KubeConfig = &meta.KubeConfigReference{
+			SecretRef: meta.SecretKeyReference{
+				Name: helmReleaseArgs.kubeConfigSecretRef,
+			},
 		}
 	}
 
@@ -303,13 +331,13 @@ func createHelmReleaseCmdRun(cmd *cobra.Command, args []string) error {
 	}
 
 	logger.Waitingf("waiting for HelmRelease reconciliation")
-	if err := wait.PollImmediate(rootArgs.pollInterval, rootArgs.timeout,
-		isHelmReleaseReady(ctx, kubeClient, namespacedName, &helmRelease)); err != nil {
+	if err := wait.PollUntilContextTimeout(ctx, rootArgs.pollInterval, rootArgs.timeout, true,
+		isObjectReadyConditionFunc(kubeClient, namespacedName, &helmRelease)); err != nil {
 		return err
 	}
 	logger.Successf("HelmRelease %s is ready", name)
 
-	logger.Successf("applied revision %s", helmRelease.Status.LastAppliedRevision)
+	logger.Successf("applied revision %s", getHelmReleaseRevision(helmRelease))
 	return nil
 }
 
@@ -342,23 +370,6 @@ func upsertHelmRelease(ctx context.Context, kubeClient client.Client,
 	helmRelease = &existing
 	logger.Successf("HelmRelease updated")
 	return namespacedName, nil
-}
-
-func isHelmReleaseReady(ctx context.Context, kubeClient client.Client,
-	namespacedName types.NamespacedName, helmRelease *helmv2.HelmRelease) wait.ConditionFunc {
-	return func() (bool, error) {
-		err := kubeClient.Get(ctx, namespacedName, helmRelease)
-		if err != nil {
-			return false, err
-		}
-
-		// Confirm the state we are observing is for the current generation
-		if helmRelease.Generation != helmRelease.Status.ObservedGeneration {
-			return false, nil
-		}
-
-		return apimeta.IsStatusConditionTrue(helmRelease.Status.Conditions, meta.ReadyCondition), nil
-	}
 }
 
 func validateStrategy(input string) bool {

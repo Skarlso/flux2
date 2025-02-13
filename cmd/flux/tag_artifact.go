@@ -20,18 +20,19 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/fluxcd/flux2/internal/flags"
-	sourcev1 "github.com/fluxcd/source-controller/api/v1beta2"
 	"github.com/spf13/cobra"
 
 	oci "github.com/fluxcd/pkg/oci/client"
+	sourcev1 "github.com/fluxcd/source-controller/api/v1beta2"
+
+	"github.com/fluxcd/flux2/v2/internal/flags"
 )
 
 var tagArtifactCmd = &cobra.Command{
 	Use:   "artifact",
 	Short: "Tag artifact",
-	Long: `The tag artifact command creates tags for the given OCI artifact.
-The command can read the credentials from '~/.docker/config.json' but they can also be passed with --creds. It can also login to a supported provider with the --provider flag.`,
+	Long: withPreviewNote(`The tag artifact command creates tags for the given OCI artifact.
+The command can read the credentials from '~/.docker/config.json' but they can also be passed with --creds. It can also login to a supported provider with the --provider flag.`),
 	Example: `  # Tag an artifact version as latest
   flux tag artifact oci://ghcr.io/org/manifests/app:v0.0.1 --tag latest
 `,
@@ -77,7 +78,7 @@ func tagArtifactCmdRun(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), rootArgs.timeout)
 	defer cancel()
 
-	ociClient := oci.NewLocalClient()
+	ociClient := oci.NewClient(oci.DefaultOptions())
 
 	if tagArtifactArgs.provider.String() == sourcev1.GenericOCIProvider && tagArtifactArgs.creds != "" {
 		logger.Actionf("logging in to registry with credentials")

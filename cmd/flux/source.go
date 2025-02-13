@@ -19,7 +19,8 @@ package main
 import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	sourcev1 "github.com/fluxcd/source-controller/api/v1beta2"
+	sourcev1 "github.com/fluxcd/source-controller/api/v1"
+	sourcev1b2 "github.com/fluxcd/source-controller/api/v1beta2"
 )
 
 // These are general-purpose adapters for attaching methods to, for
@@ -29,13 +30,13 @@ import (
 // sourcev1.ociRepository
 
 var ociRepositoryType = apiType{
-	kind:         sourcev1.OCIRepositoryKind,
+	kind:         sourcev1b2.OCIRepositoryKind,
 	humanKind:    "source oci",
-	groupVersion: sourcev1.GroupVersion,
+	groupVersion: sourcev1b2.GroupVersion,
 }
 
 type ociRepositoryAdapter struct {
-	*sourcev1.OCIRepository
+	*sourcev1b2.OCIRepository
 }
 
 func (a ociRepositoryAdapter) asClientObject() client.Object {
@@ -46,10 +47,10 @@ func (a ociRepositoryAdapter) deepCopyClientObject() client.Object {
 	return a.OCIRepository.DeepCopy()
 }
 
-// sourcev1.OCIRepositoryList
+// sourcev1b2.OCIRepositoryList
 
 type ociRepositoryListAdapter struct {
-	*sourcev1.OCIRepositoryList
+	*sourcev1b2.OCIRepositoryList
 }
 
 func (a ociRepositoryListAdapter) asClientList() client.ObjectList {

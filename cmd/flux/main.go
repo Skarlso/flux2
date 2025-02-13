@@ -24,16 +24,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	runclient "github.com/fluxcd/pkg/runtime/client"
 
-	"github.com/fluxcd/flux2/pkg/manifestgen/install"
+	"github.com/fluxcd/flux2/v2/pkg/manifestgen/install"
 )
 
 var VERSION = "0.0.0-dev.0"
@@ -149,6 +151,11 @@ func init() {
 	apiServer := ""
 	kubeconfigArgs.APIServer = &apiServer
 	rootCmd.PersistentFlags().StringVar(kubeconfigArgs.APIServer, "server", *kubeconfigArgs.APIServer, "The address and port of the Kubernetes API server")
+	// Update the description for kubeconfig TLS flags so that user's don't mistake it for a Flux specific flag
+	rootCmd.Flag("insecure-skip-tls-verify").Usage = "If true, the Kubernetes API server's certificate will not be checked for validity. This will make your HTTPS connections insecure"
+	rootCmd.Flag("client-certificate").Usage = "Path to a client certificate file for TLS authentication to the Kubernetes API server"
+	rootCmd.Flag("certificate-authority").Usage = "Path to a cert file for the certificate authority to authenticate the Kubernetes API server"
+	rootCmd.Flag("client-key").Usage = "Path to a client key file for TLS authentication to the Kubernetes API server"
 
 	kubeclientOptions.BindFlags(rootCmd.PersistentFlags())
 
@@ -170,6 +177,15 @@ func NewRootFlags() rootFlags {
 
 func main() {
 	log.SetFlags(0)
+
+	// This is required because controller-runtime expects its consumers to
+	// set a logger through log.SetLogger within 30 seconds of the program's
+	// initalization. If not set, the entire debug stack is printed as an
+	// error, see: https://github.com/kubernetes-sigs/controller-runtime/blob/ed8be90/pkg/log/log.go#L59
+	// Since we have our own logging and don't care about controller-runtime's
+	// logger, we configure it's logger to do nothing.
+	ctrllog.SetLogger(logr.New(ctrllog.NullLogSink{}))
+
 	if err := rootCmd.Execute(); err != nil {
 
 		if err, ok := err.(*RequestError); ok {
@@ -223,4 +239,11 @@ func readPasswordFromStdin(prompt string) (string, error) {
 	}
 	fmt.Println()
 	return strings.TrimRight(out, "\r\n"), nil
+}
+
+func withPreviewNote(desc string) string {
+	previewNote := `⚠️  Please note that this command is in preview and under development.
+While we try our best to not introduce breaking changes, they may occur when
+we adapt to new features and/or find better ways to facilitate what it does.`
+	return fmt.Sprintf("%s\n\n%s", strings.TrimSpace(desc), previewNote)
 }

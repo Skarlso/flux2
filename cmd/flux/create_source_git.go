@@ -35,13 +35,12 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/fluxcd/pkg/apis/meta"
-	"github.com/fluxcd/pkg/runtime/conditions"
 
-	sourcev1 "github.com/fluxcd/source-controller/api/v1beta2"
+	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 
-	"github.com/fluxcd/flux2/internal/flags"
-	"github.com/fluxcd/flux2/internal/utils"
-	"github.com/fluxcd/flux2/pkg/manifestgen/sourcesecret"
+	"github.com/fluxcd/flux2/v2/internal/flags"
+	"github.com/fluxcd/flux2/v2/internal/utils"
+	"github.com/fluxcd/flux2/v2/pkg/manifestgen/sourcesecret"
 )
 
 type sourceGitFlags struct {
@@ -49,13 +48,16 @@ type sourceGitFlags struct {
 	branch            string
 	tag               string
 	semver            string
+	refName           string
+	commit            string
 	username          string
 	password          string
 	keyAlgorithm      flags.PublicKeyAlgorithm
 	keyRSABits        flags.RSAKeyBits
 	keyECDSACurve     flags.ECDSACurve
 	secretRef         string
-	gitImplementation flags.GitImplementation
+	proxySecretRef    string
+	provider          flags.SourceGitProvider
 	caFile            string
 	privateKeyFile    string
 	recurseSubmodules bool
@@ -119,7 +121,13 @@ For private Git repositories, the basic authentication credentials are stored in
     --url=https://github.com/stefanprodan/podinfo \
     --branch=master \
     --username=username \
-    --password=password`,
+    --password=password
+
+  # Create a source for a Git repository using azure provider
+  flux create source git podinfo \
+    --url=https://dev.azure.com/foo/bar/_git/podinfo \
+    --branch=master \
+    --provider=azure`,
 	RunE: createSourceGitCmdRun,
 }
 
@@ -130,13 +138,16 @@ func init() {
 	createSourceGitCmd.Flags().StringVar(&sourceGitArgs.branch, "branch", "", "git branch")
 	createSourceGitCmd.Flags().StringVar(&sourceGitArgs.tag, "tag", "", "git tag")
 	createSourceGitCmd.Flags().StringVar(&sourceGitArgs.semver, "tag-semver", "", "git tag semver range")
+	createSourceGitCmd.Flags().StringVar(&sourceGitArgs.refName, "ref-name", "", " git reference name")
+	createSourceGitCmd.Flags().StringVar(&sourceGitArgs.commit, "commit", "", "git commit")
 	createSourceGitCmd.Flags().StringVarP(&sourceGitArgs.username, "username", "u", "", "basic authentication username")
 	createSourceGitCmd.Flags().StringVarP(&sourceGitArgs.password, "password", "p", "", "basic authentication password")
 	createSourceGitCmd.Flags().Var(&sourceGitArgs.keyAlgorithm, "ssh-key-algorithm", sourceGitArgs.keyAlgorithm.Description())
 	createSourceGitCmd.Flags().Var(&sourceGitArgs.keyRSABits, "ssh-rsa-bits", sourceGitArgs.keyRSABits.Description())
 	createSourceGitCmd.Flags().Var(&sourceGitArgs.keyECDSACurve, "ssh-ecdsa-curve", sourceGitArgs.keyECDSACurve.Description())
-	createSourceGitCmd.Flags().StringVar(&sourceGitArgs.secretRef, "secret-ref", "", "the name of an existing secret containing SSH or basic credentials")
-	createSourceGitCmd.Flags().Var(&sourceGitArgs.gitImplementation, "git-implementation", sourceGitArgs.gitImplementation.Description())
+	createSourceGitCmd.Flags().StringVar(&sourceGitArgs.secretRef, "secret-ref", "", "the name of an existing secret containing SSH or basic credentials or github app authentication")
+	createSourceGitCmd.Flags().StringVar(&sourceGitArgs.proxySecretRef, "proxy-secret-ref", "", "the name of an existing secret containing the proxy address and credentials")
+	createSourceGitCmd.Flags().Var(&sourceGitArgs.provider, "provider", sourceGitArgs.provider.Description())
 	createSourceGitCmd.Flags().StringVar(&sourceGitArgs.caFile, "ca-file", "", "path to TLS CA file used for validating self-signed certificates")
 	createSourceGitCmd.Flags().StringVar(&sourceGitArgs.privateKeyFile, "private-key-file", "", "path to a passwordless private key file used for authenticating to the Git SSH server")
 	createSourceGitCmd.Flags().BoolVar(&sourceGitArgs.recurseSubmodules, "recurse-submodules", false,
@@ -170,16 +181,12 @@ func createSourceGitCmdRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("git URL scheme '%s' not supported, can be: ssh, http and https", u.Scheme)
 	}
 
-	if sourceGitArgs.branch == "" && sourceGitArgs.tag == "" && sourceGitArgs.semver == "" {
-		return fmt.Errorf("a Git ref is required, use one of the following: --branch, --tag or --tag-semver")
+	if sourceGitArgs.branch == "" && sourceGitArgs.tag == "" && sourceGitArgs.semver == "" && sourceGitArgs.commit == "" && sourceGitArgs.refName == "" {
+		return fmt.Errorf("a Git ref is required, use one of the following: --branch, --tag, --commit, --ref-name or --tag-semver")
 	}
 
 	if sourceGitArgs.caFile != "" && u.Scheme == "ssh" {
 		return fmt.Errorf("specifying a CA file is not supported for Git over SSH")
-	}
-
-	if sourceGitArgs.recurseSubmodules && sourceGitArgs.gitImplementation == sourcev1.LibGit2Implementation {
-		return fmt.Errorf("recurse submodules requires --git-implementation=%s", sourcev1.GoGitImplementation)
 	}
 
 	tmpDir, err := os.MkdirTemp("", name)
@@ -220,11 +227,12 @@ func createSourceGitCmdRun(cmd *cobra.Command, args []string) error {
 		gitRepository.Spec.Timeout = &metav1.Duration{Duration: createSourceArgs.fetchTimeout}
 	}
 
-	if sourceGitArgs.gitImplementation != "" {
-		gitRepository.Spec.GitImplementation = sourceGitArgs.gitImplementation.String()
-	}
-
-	if sourceGitArgs.semver != "" {
+	if sourceGitArgs.commit != "" {
+		gitRepository.Spec.Reference.Commit = sourceGitArgs.commit
+		gitRepository.Spec.Reference.Branch = sourceGitArgs.branch
+	} else if sourceGitArgs.refName != "" {
+		gitRepository.Spec.Reference.Name = sourceGitArgs.refName
+	} else if sourceGitArgs.semver != "" {
 		gitRepository.Spec.Reference.SemVer = sourceGitArgs.semver
 	} else if sourceGitArgs.tag != "" {
 		gitRepository.Spec.Reference.Tag = sourceGitArgs.tag
@@ -236,6 +244,16 @@ func createSourceGitCmdRun(cmd *cobra.Command, args []string) error {
 		gitRepository.Spec.SecretRef = &meta.LocalObjectReference{
 			Name: sourceGitArgs.secretRef,
 		}
+	}
+
+	if sourceGitArgs.proxySecretRef != "" {
+		gitRepository.Spec.ProxySecretRef = &meta.LocalObjectReference{
+			Name: sourceGitArgs.proxySecretRef,
+		}
+	}
+
+	if provider := sourceGitArgs.provider.String(); provider != "" {
+		gitRepository.Spec.Provider = provider
 	}
 
 	if createArgs.export {
@@ -275,7 +293,7 @@ func createSourceGitCmdRun(cmd *cobra.Command, args []string) error {
 				if err != nil {
 					return fmt.Errorf("unable to read TLS CA file: %w", err)
 				}
-				secretOpts.CAFile = caBundle
+				secretOpts.CACrt = caBundle
 			}
 			secretOpts.Username = sourceGitArgs.username
 			secretOpts.Password = sourceGitArgs.password
@@ -326,8 +344,8 @@ func createSourceGitCmdRun(cmd *cobra.Command, args []string) error {
 	}
 
 	logger.Waitingf("waiting for GitRepository source reconciliation")
-	if err := wait.PollImmediate(rootArgs.pollInterval, rootArgs.timeout,
-		isGitRepositoryReady(ctx, kubeClient, namespacedName, &gitRepository)); err != nil {
+	if err := wait.PollUntilContextTimeout(ctx, rootArgs.pollInterval, rootArgs.timeout, true,
+		isObjectReadyConditionFunc(kubeClient, namespacedName, &gitRepository)); err != nil {
 		return err
 	}
 	logger.Successf("GitRepository source reconciliation completed")
@@ -368,31 +386,4 @@ func upsertGitRepository(ctx context.Context, kubeClient client.Client,
 	gitRepository = &existing
 	logger.Successf("GitRepository source updated")
 	return namespacedName, nil
-}
-
-func isGitRepositoryReady(ctx context.Context, kubeClient client.Client,
-	namespacedName types.NamespacedName, gitRepository *sourcev1.GitRepository) wait.ConditionFunc {
-	return func() (bool, error) {
-		err := kubeClient.Get(ctx, namespacedName, gitRepository)
-		if err != nil {
-			return false, err
-		}
-
-		if c := conditions.Get(gitRepository, meta.ReadyCondition); c != nil {
-			// Confirm the Ready condition we are observing is for the
-			// current generation
-			if c.ObservedGeneration != gitRepository.GetGeneration() {
-				return false, nil
-			}
-
-			// Further check the Status
-			switch c.Status {
-			case metav1.ConditionTrue:
-				return true, nil
-			case metav1.ConditionFalse:
-				return false, fmt.Errorf(c.Message)
-			}
-		}
-		return false, nil
-	}
 }

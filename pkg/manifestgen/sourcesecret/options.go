@@ -31,14 +31,27 @@ const (
 )
 
 const (
+	AddressSecretKey    = "address"
 	UsernameSecretKey   = "username"
 	PasswordSecretKey   = "password"
-	CAFileSecretKey     = "caFile"
-	CertFileSecretKey   = "certFile"
-	KeyFileSecretKey    = "keyFile"
+	CACrtSecretKey      = "ca.crt"
+	TLSCrtSecretKey     = "tls.crt"
+	TLSKeySecretKey     = "tls.key"
 	PrivateKeySecretKey = "identity"
 	PublicKeySecretKey  = "identity.pub"
 	KnownHostsSecretKey = "known_hosts"
+	BearerTokenKey      = "bearerToken"
+	TrustPolicyKey      = "trustpolicy.json"
+
+	// Deprecated: Replaced by CACrtSecretKey, but kept for backwards
+	// compatibility with deprecated TLS flags.
+	CAFileSecretKey = "caFile"
+	// Deprecated: Replaced by TLSCrtSecretKey, but kept for backwards
+	// compatibility with deprecated TLS flags.
+	CertFileSecretKey = "certFile"
+	// Deprecated: Replaced by TLSKeySecretKey, but kept for backwards
+	// compatibility with deprecated TLS flags.
+	KeyFileSecretKey = "keyFile"
 )
 
 type Options struct {
@@ -53,11 +66,26 @@ type Options struct {
 	Keypair             *ssh.KeyPair
 	Username            string
 	Password            string
-	CAFile              []byte
-	CertFile            []byte
-	KeyFile             []byte
+	CACrt               []byte
+	TLSCrt              []byte
+	TLSKey              []byte
 	TargetPath          string
 	ManifestFile        string
+	BearerToken         string
+	VerificationCrts    []VerificationCrt
+	TrustPolicy         []byte
+	Address             string
+
+	// GitHub App options
+	GitHubAppID             string
+	GitHubAppInstallationID string
+	GitHubAppPrivateKey     string
+	GitHubAppBaseURL        string
+}
+
+type VerificationCrt struct {
+	Name  string
+	CACrt []byte
 }
 
 func MakeDefaultOptions() Options {
@@ -68,9 +96,7 @@ func MakeDefaultOptions() Options {
 		PrivateKeyAlgorithm: RSAPrivateKeyAlgorithm,
 		Username:            "",
 		Password:            "",
-		CAFile:              []byte{},
-		CertFile:            []byte{},
-		KeyFile:             []byte{},
 		ManifestFile:        "secret.yaml",
+		BearerToken:         "",
 	}
 }

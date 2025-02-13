@@ -30,13 +30,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	"github.com/fluxcd/flux2/internal/utils"
+	"github.com/fluxcd/flux2/v2/internal/utils"
 )
 
 var createCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create or update sources and resources",
-	Long:  "The create sub-commands generate sources and resources.",
+	Long:  `The create sub-commands generate sources and resources.`,
 }
 
 type createFlags struct {
@@ -125,14 +125,14 @@ func (names apiType) upsertAndWait(object upsertWaitable, mutate func() error) e
 	logger.Generatef("generating %s", names.kind)
 	logger.Actionf("applying %s", names.kind)
 
-	namespacedName, err := imageRepositoryType.upsert(ctx, kubeClient, object, mutate)
+	namespacedName, err := names.upsert(ctx, kubeClient, object, mutate)
 	if err != nil {
 		return err
 	}
 
 	logger.Waitingf("waiting for %s reconciliation", names.kind)
-	if err := wait.PollImmediate(rootArgs.pollInterval, rootArgs.timeout,
-		isReady(ctx, kubeClient, namespacedName, object)); err != nil {
+	if err := wait.PollUntilContextTimeout(ctx, rootArgs.pollInterval, rootArgs.timeout, true,
+		isObjectReadyConditionFunc(kubeClient, namespacedName, object.asClientObject())); err != nil {
 		return err
 	}
 	logger.Successf("%s reconciliation completed", names.kind)
@@ -165,6 +165,6 @@ func parseLabels() (map[string]string, error) {
 }
 
 func validateObjectName(name string) bool {
-	r := regexp.MustCompile("^[a-z0-9]([a-z0-9\\-]){0,61}[a-z0-9]$")
+	r := regexp.MustCompile(`^[a-z0-9]([a-z0-9\-]){0,61}[a-z0-9]$`)
 	return r.MatchString(name)
 }

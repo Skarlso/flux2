@@ -31,7 +31,7 @@ import (
 
 	"github.com/fluxcd/pkg/kustomize/filesys"
 
-	"github.com/fluxcd/flux2/pkg/manifestgen"
+	"github.com/fluxcd/flux2/v2/pkg/manifestgen"
 )
 
 // Generate scans the given directory for Kubernetes manifests and creates a
@@ -186,11 +186,8 @@ func BuildWithRoot(root, base string) ([]byte, error) {
 	}
 
 	buildOptions := &krusty.Options{
-		DoLegacyResourceSort: true,
-		LoadRestrictions:     kustypes.LoadRestrictionsNone,
-		AddManagedbyLabel:    false,
-		DoPrune:              false,
-		PluginConfig:         kustypes.DisabledPluginConfig(),
+		LoadRestrictions: kustypes.LoadRestrictionsNone,
+		PluginConfig:     kustypes.DisabledPluginConfig(),
 	}
 
 	k := krusty.MakeKustomizer(buildOptions)

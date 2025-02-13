@@ -25,7 +25,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fluxcd/flux2/internal/build"
+	"github.com/fluxcd/flux2/v2/internal/build"
 	"github.com/fluxcd/pkg/ssa"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
@@ -91,6 +91,18 @@ func TestDiffKustomization(t *testing.T) {
 			objectFile: "./testdata/diff-kustomization/stringdata-sops-secret.yaml",
 			assert:     assertGoldenFile("./testdata/diff-kustomization/diff-with-drifted-stringdata-sops-secret.golden"),
 		},
+		{
+			name:       "diff where kustomization file has multiple objects with the same name",
+			args:       "diff kustomization podinfo --path ./testdata/build-kustomization/podinfo --progress-bar=false --kustomization-file ./testdata/diff-kustomization/flux-kustomization-multiobj.yaml",
+			objectFile: "",
+			assert:     assertGoldenFile("./testdata/diff-kustomization/nothing-is-deployed.golden"),
+		},
+		{
+			name:       "diff with recursive",
+			args:       "diff kustomization podinfo --path ./testdata/build-kustomization/podinfo-with-my-app --progress-bar=false --recursive --local-sources GitRepository/default/podinfo=./testdata/build-kustomization",
+			objectFile: "./testdata/diff-kustomization/my-app.yaml",
+			assert:     assertGoldenFile("./testdata/diff-kustomization/diff-with-recursive.golden"),
+		},
 	}
 
 	tmpl := map[string]string{
@@ -109,7 +121,9 @@ func TestDiffKustomization(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.objectFile != "" {
-				resourceManager.ApplyAll(context.Background(), createObjectFromFile(tt.objectFile, tmpl, t), ssa.DefaultApplyOptions())
+				if _, err := resourceManager.ApplyAll(context.Background(), createObjectFromFile(tt.objectFile, tmpl, t), ssa.DefaultApplyOptions()); err != nil {
+					t.Error(err)
+				}
 			}
 			cmd := cmdTestCase{
 				args:   tt.args + " -n " + tmpl["fluxns"],

@@ -26,13 +26,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
-	"github.com/fluxcd/flux2/internal/utils"
+	"github.com/fluxcd/flux2/v2/internal/utils"
 )
 
 var exportCmd = &cobra.Command{
 	Use:   "export",
 	Short: "Export resources in YAML format",
-	Long:  "The export sub-commands export resources in YAML format.",
+	Long:  `The export sub-commands export resources in YAML format.`,
 }
 
 type exportFlags struct {
@@ -122,5 +122,6 @@ func printExport(export interface{}) error {
 func resourceToString(data []byte) string {
 	data = bytes.Replace(data, []byte("  creationTimestamp: null\n"), []byte(""), 1)
 	data = bytes.Replace(data, []byte("status: {}\n"), []byte(""), 1)
+	data = bytes.TrimSpace(data)
 	return string(data)
 }

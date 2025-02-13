@@ -10,20 +10,26 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	"github.com/fluxcd/flux2/internal/utils"
 	"github.com/fluxcd/pkg/apis/meta"
+
+	"github.com/fluxcd/flux2/v2/internal/utils"
 )
 
 type reconcileWithSource interface {
 	adapter
 	reconcilable
 	reconcileSource() bool
-	getSource() (reconcileCommand, types.NamespacedName)
+	getSource() (reconcileSource, types.NamespacedName)
+}
+
+type reconcileSource interface {
+	run(cmd *cobra.Command, args []string) error
 }
 
 type reconcileWithSourceCommand struct {
 	apiType
 	object reconcileWithSource
+	force  bool
 }
 
 func (reconcile reconcileWithSourceCommand) run(cmd *cobra.Command, args []string) error {
@@ -54,7 +60,7 @@ func (reconcile reconcileWithSourceCommand) run(cmd *cobra.Command, args []strin
 		return fmt.Errorf("resource is suspended")
 	}
 
-	if reconcile.object.reconcileSource() {
+	if reconcile.object.reconcileSource() || reconcile.force {
 		reconcileCmd, nsName := reconcile.object.getSource()
 		nsCopy := *kubeconfigArgs.Namespace
 		if nsName.Namespace != "" {
@@ -77,8 +83,8 @@ func (reconcile reconcileWithSourceCommand) run(cmd *cobra.Command, args []strin
 	logger.Successf("%s annotated", reconcile.kind)
 
 	logger.Waitingf("waiting for %s reconciliation", reconcile.kind)
-	if err := wait.PollImmediate(rootArgs.pollInterval, rootArgs.timeout,
-		reconciliationHandled(ctx, kubeClient, namespacedName, reconcile.object, lastHandledReconcileAt)); err != nil {
+	if err := wait.PollUntilContextTimeout(ctx, rootArgs.pollInterval, rootArgs.timeout, true,
+		reconciliationHandled(kubeClient, namespacedName, reconcile.object, lastHandledReconcileAt)); err != nil {
 		return err
 	}
 

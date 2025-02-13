@@ -25,9 +25,12 @@ import (
 var suspendSourceOCIRepositoryCmd = &cobra.Command{
 	Use:   "oci [name]",
 	Short: "Suspend reconciliation of an OCIRepository",
-	Long:  "The suspend command disables the reconciliation of an OCIRepository resource.",
+	Long:  `The suspend command disables the reconciliation of an OCIRepository resource.`,
 	Example: `  # Suspend reconciliation for an existing OCIRepository
-  flux suspend source oci podinfo`,
+  flux suspend source oci podinfo
+
+  # Suspend reconciliation for multiple OCIRepositories
+  flux suspend source oci podinfo-1 podinfo-2`,
 	ValidArgsFunction: resourceNamesCompletionFunc(sourcev1.GroupVersion.WithKind(sourcev1.OCIRepositoryKind)),
 	RunE: suspendCommand{
 		apiType: ociRepositoryType,

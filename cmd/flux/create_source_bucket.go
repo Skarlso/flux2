@@ -31,12 +31,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/fluxcd/pkg/apis/meta"
-	"github.com/fluxcd/pkg/runtime/conditions"
 
-	sourcev1 "github.com/fluxcd/source-controller/api/v1beta2"
+	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 
-	"github.com/fluxcd/flux2/internal/flags"
-	"github.com/fluxcd/flux2/internal/utils"
+	"github.com/fluxcd/flux2/v2/internal/flags"
+	"github.com/fluxcd/flux2/v2/internal/utils"
 )
 
 var createSourceBucketCmd = &cobra.Command{
@@ -64,15 +63,16 @@ For Buckets with static authentication, the credentials are stored in a Kubernet
 }
 
 type sourceBucketFlags struct {
-	name        string
-	provider    flags.SourceBucketProvider
-	endpoint    string
-	accessKey   string
-	secretKey   string
-	region      string
-	insecure    bool
-	secretRef   string
-	ignorePaths []string
+	name           string
+	provider       flags.SourceBucketProvider
+	endpoint       string
+	accessKey      string
+	secretKey      string
+	region         string
+	insecure       bool
+	secretRef      string
+	proxySecretRef string
+	ignorePaths    []string
 }
 
 var sourceBucketArgs = newSourceBucketFlags()
@@ -86,6 +86,7 @@ func init() {
 	createSourceBucketCmd.Flags().StringVar(&sourceBucketArgs.region, "region", "", "the bucket region")
 	createSourceBucketCmd.Flags().BoolVar(&sourceBucketArgs.insecure, "insecure", false, "for when connecting to a non-TLS S3 HTTP endpoint")
 	createSourceBucketCmd.Flags().StringVar(&sourceBucketArgs.secretRef, "secret-ref", "", "the name of an existing secret containing credentials")
+	createSourceBucketCmd.Flags().StringVar(&sourceBucketArgs.proxySecretRef, "proxy-secret-ref", "", "the name of an existing secret containing the proxy address and credentials")
 	createSourceBucketCmd.Flags().StringSliceVar(&sourceBucketArgs.ignorePaths, "ignore-paths", nil, "set paths to ignore in bucket resource (can specify multiple paths with commas: path1,path2)")
 
 	createSourceCmd.AddCommand(createSourceBucketCmd)
@@ -93,7 +94,7 @@ func init() {
 
 func newSourceBucketFlags() sourceBucketFlags {
 	return sourceBucketFlags{
-		provider: flags.SourceBucketProvider(sourcev1.GenericBucketProvider),
+		provider: flags.SourceBucketProvider(sourcev1.BucketProviderGeneric),
 	}
 }
 
@@ -154,6 +155,12 @@ func createSourceBucketCmdRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if sourceBucketArgs.proxySecretRef != "" {
+		bucket.Spec.ProxySecretRef = &meta.LocalObjectReference{
+			Name: sourceBucketArgs.proxySecretRef,
+		}
+	}
+
 	if createArgs.export {
 		return printExport(exportBucket(bucket))
 	}
@@ -204,8 +211,8 @@ func createSourceBucketCmdRun(cmd *cobra.Command, args []string) error {
 	}
 
 	logger.Waitingf("waiting for Bucket source reconciliation")
-	if err := wait.PollImmediate(rootArgs.pollInterval, rootArgs.timeout,
-		isBucketReady(ctx, kubeClient, namespacedName, bucket)); err != nil {
+	if err := wait.PollUntilContextTimeout(ctx, rootArgs.pollInterval, rootArgs.timeout, true,
+		isObjectReadyConditionFunc(kubeClient, namespacedName, bucket)); err != nil {
 		return err
 	}
 	logger.Successf("Bucket source reconciliation completed")
@@ -246,31 +253,4 @@ func upsertBucket(ctx context.Context, kubeClient client.Client,
 	bucket = &existing
 	logger.Successf("Bucket source updated")
 	return namespacedName, nil
-}
-
-func isBucketReady(ctx context.Context, kubeClient client.Client,
-	namespacedName types.NamespacedName, bucket *sourcev1.Bucket) wait.ConditionFunc {
-	return func() (bool, error) {
-		err := kubeClient.Get(ctx, namespacedName, bucket)
-		if err != nil {
-			return false, err
-		}
-
-		if c := conditions.Get(bucket, meta.ReadyCondition); c != nil {
-			// Confirm the Ready condition we are observing is for the
-			// current generation
-			if c.ObservedGeneration != bucket.GetGeneration() {
-				return false, nil
-			}
-
-			// Further check the Status
-			switch c.Status {
-			case metav1.ConditionTrue:
-				return true, nil
-			case metav1.ConditionFalse:
-				return false, fmt.Errorf(c.Message)
-			}
-		}
-		return false, nil
-	}
 }

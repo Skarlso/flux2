@@ -1,11 +1,10 @@
 ---
-apiVersion: source.toolkit.fluxcd.io/v1beta2
+apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository
 metadata:
   name: flux-system
   namespace: {{ .fluxns }}
 spec:
-  gitImplementation: go-git
   interval: 5m0s
   ref:
     branch: main
@@ -13,4 +12,3 @@ spec:
     name: flux-system
   timeout: 1m0s
   url: ssh://git@github.com/example/repo
-

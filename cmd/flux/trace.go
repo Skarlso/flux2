@@ -33,21 +33,23 @@ import (
 	"k8s.io/cli-runtime/pkg/resource"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/fluxcd/flux2/internal/utils"
-	helmv2 "github.com/fluxcd/helm-controller/api/v2beta1"
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta2"
+	helmv2 "github.com/fluxcd/helm-controller/api/v2"
+	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 	fluxmeta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/fluxcd/pkg/oci"
-	sourcev1 "github.com/fluxcd/source-controller/api/v1beta2"
+	sourcev1 "github.com/fluxcd/source-controller/api/v1"
+	sourcev1b2 "github.com/fluxcd/source-controller/api/v1beta2"
+
+	"github.com/fluxcd/flux2/v2/internal/utils"
 )
 
 var traceCmd = &cobra.Command{
 	Use:   "trace <resource> <name> [<name> ...]",
 	Short: "Trace in-cluster objects throughout the GitOps delivery pipeline",
-	Long: `The trace command shows how one or more objects are managed by Flux,
+	Long: withPreviewNote(`The trace command shows how one or more objects are managed by Flux,
 from which source and revision they come, and what the latest reconciliation status is.
 
-You can also trace multiple objects with different resource kinds using <resource>/<name> multiple times.`,
+You can also trace multiple objects with different resource kinds using <resource>/<name> multiple times.`),
 	Example: `  # Trace a Kubernetes Deployment
   flux trace -n apps deployment my-app
 
@@ -62,7 +64,7 @@ You can also trace multiple objects with different resource kinds using <resourc
   
   # API Version and Kind can also be specified explicitly
   # Note that either both, kind and api-version, or neither have to be specified.
-  flux trace redis --kind=helmrelease --api-version=helm.toolkit.fluxcd.io/v2beta1 -n redis`,
+  flux trace redis --kind=helmrelease --api-version=helm.toolkit.fluxcd.io/v2 -n redis`,
 	RunE: traceCmdRun,
 }
 
@@ -221,7 +223,7 @@ func traceKustomization(ctx context.Context, kubeClient client.Client, ksName ty
 	ksReady := meta.FindStatusCondition(ks.Status.Conditions, fluxmeta.ReadyCondition)
 
 	var gitRepository *sourcev1.GitRepository
-	var ociRepository *sourcev1.OCIRepository
+	var ociRepository *sourcev1b2.OCIRepository
 	var ksRepositoryReady *metav1.Condition
 	switch ks.Spec.SourceRef.Kind {
 	case sourcev1.GitRepositoryKind:
@@ -238,8 +240,8 @@ func traceKustomization(ctx context.Context, kubeClient client.Client, ksName ty
 			return "", fmt.Errorf("failed to find GitRepository: %w", err)
 		}
 		ksRepositoryReady = meta.FindStatusCondition(gitRepository.Status.Conditions, fluxmeta.ReadyCondition)
-	case sourcev1.OCIRepositoryKind:
-		ociRepository = &sourcev1.OCIRepository{}
+	case sourcev1b2.OCIRepositoryKind:
+		ociRepository = &sourcev1b2.OCIRepository{}
 		sourceNamespace := ks.Namespace
 		if ks.Spec.SourceRef.Namespace != "" {
 			sourceNamespace = ks.Spec.SourceRef.Namespace
@@ -346,7 +348,7 @@ Status:          Unknown
 		Kustomization      *kustomizev1.Kustomization
 		KustomizationReady *metav1.Condition
 		GitRepository      *sourcev1.GitRepository
-		OCIRepository      *sourcev1.OCIRepository
+		OCIRepository      *sourcev1b2.OCIRepository
 		RepositoryReady    *metav1.Condition
 		Annotations        map[string]string
 	}{
@@ -446,7 +448,7 @@ Namespace:      {{.HelmRelease.Namespace}}
 {{- if .HelmRelease.Spec.TargetNamespace }}
 Target:         {{.HelmRelease.Spec.TargetNamespace}}
 {{- end }}
-Revision:       {{.HelmRelease.Status.LastAppliedRevision}}
+Revision:       {{.HelmRelease.Status.LastAttemptedRevision}}
 {{- if .HelmReleaseReady }}
 Status:         Last reconciled at {{.HelmReleaseReady.LastTransitionTime}}
 Message:        {{.HelmReleaseReady.Message}}

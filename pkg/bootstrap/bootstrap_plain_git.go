@@ -18,6 +18,7 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -26,29 +27,33 @@ import (
 	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
-	gogit "github.com/fluxcd/go-git/v5"
+	gogit "github.com/go-git/go-git/v5"
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
-	"sigs.k8s.io/cli-utils/pkg/object"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/kustomize/api/konfig"
 	"sigs.k8s.io/yaml"
 
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta2"
-	"github.com/fluxcd/pkg/kustomize/filesys"
-	runclient "github.com/fluxcd/pkg/runtime/client"
-
-	"github.com/fluxcd/flux2/internal/utils"
-	"github.com/fluxcd/flux2/pkg/log"
-	"github.com/fluxcd/flux2/pkg/manifestgen/install"
-	"github.com/fluxcd/flux2/pkg/manifestgen/kustomization"
-	"github.com/fluxcd/flux2/pkg/manifestgen/sourcesecret"
-	"github.com/fluxcd/flux2/pkg/manifestgen/sync"
-	"github.com/fluxcd/flux2/pkg/status"
+	"github.com/fluxcd/cli-utils/pkg/object"
+	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
+	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/fluxcd/pkg/git"
 	"github.com/fluxcd/pkg/git/repository"
+	"github.com/fluxcd/pkg/kustomize/filesys"
+	runclient "github.com/fluxcd/pkg/runtime/client"
+	sourcev1 "github.com/fluxcd/source-controller/api/v1"
+
+	"github.com/fluxcd/flux2/v2/internal/utils"
+	"github.com/fluxcd/flux2/v2/pkg/log"
+	"github.com/fluxcd/flux2/v2/pkg/manifestgen/install"
+	"github.com/fluxcd/flux2/v2/pkg/manifestgen/kustomization"
+	"github.com/fluxcd/flux2/v2/pkg/manifestgen/sourcesecret"
+	"github.com/fluxcd/flux2/v2/pkg/manifestgen/sync"
+	"github.com/fluxcd/flux2/v2/pkg/status"
 )
 
 type PlainGitBootstrapper struct {
@@ -117,7 +122,11 @@ func (b *PlainGitBootstrapper) ReconcileComponents(ctx context.Context, manifest
 		b.logger.Actionf("cloning branch %q from Git repository %q", b.branch, b.url)
 		var cloned bool
 		if err = retry(1, 2*time.Second, func() (err error) {
-			_, err = b.gitClient.Clone(ctx, b.url, repository.CloneOptions{
+			if err = b.cleanGitRepoDir(); err != nil {
+				b.logger.Warningf(" failed to clean directory for git repo: %w", err)
+				return
+			}
+			_, err = b.gitClient.Clone(ctx, b.url, repository.CloneConfig{
 				CheckoutStrategy: repository.CheckoutStrategy{
 					Branch: b.branch,
 				},
@@ -165,13 +174,13 @@ func (b *PlainGitBootstrapper) ReconcileComponents(ctx context.Context, manifest
 		manifests.Path: strings.NewReader(manifests.Content),
 	}), repository.WithSigner(signer))
 	if err != nil && err != git.ErrNoStagedFiles {
-		return fmt.Errorf("failed to commit sync manifests: %w", err)
+		return fmt.Errorf("failed to commit component manifests: %w", err)
 	}
 
 	if err == nil {
-		b.logger.Successf("committed sync manifests to %q (%q)", b.branch, commit)
+		b.logger.Successf("committed component manifests to %q (%q)", b.branch, commit)
 		b.logger.Actionf("pushing component manifests to %q", b.url)
-		if err = b.gitClient.Push(ctx); err != nil {
+		if err = b.gitClient.Push(ctx, repository.PushConfig{}); err != nil {
 			return fmt.Errorf("failed to push manifests: %w", err)
 		}
 	} else {
@@ -198,6 +207,14 @@ func (b *PlainGitBootstrapper) ReconcileComponents(ctx context.Context, manifest
 		b.logger.Successf("installed components")
 	}
 
+	// Reconcile image pull secret if needed
+	if options.ImagePullSecret != "" && options.RegistryCredential != "" {
+		if err := reconcileImagePullSecret(ctx, b.kube, options); err != nil {
+			return fmt.Errorf("failed to reconcile image pull secret: %w", err)
+		}
+		b.logger.Successf("reconciled image pull secret %s", options.ImagePullSecret)
+	}
+
 	b.logger.Successf("reconciled components")
 	return nil
 }
@@ -212,7 +229,7 @@ func (b *PlainGitBootstrapper) ReconcileSourceSecret(ctx context.Context, option
 	}
 
 	// Return early if exists and no custom config is passed
-	if ok && options.Keypair == nil && len(options.CAFile) == 0 && len(options.Username+options.Password) == 0 {
+	if ok && options.Keypair == nil && len(options.CACrt) == 0 && len(options.Username+options.Password) == 0 {
 		b.logger.Successf("source secret up to date")
 		return nil
 	}
@@ -258,11 +275,18 @@ func (b *PlainGitBootstrapper) ReconcileSyncConfig(ctx context.Context, options 
 			b.logger.Actionf("cloning branch %q from Git repository %q", b.branch, b.url)
 			var cloned bool
 			if err = retry(1, 2*time.Second, func() (err error) {
-				_, err = b.gitClient.Clone(ctx, b.url, repository.CloneOptions{
+				if err = b.cleanGitRepoDir(); err != nil {
+					b.logger.Warningf(" failed to clean directory for git repo: %w", err)
+					return
+				}
+				_, err = b.gitClient.Clone(ctx, b.url, repository.CloneConfig{
 					CheckoutStrategy: repository.CheckoutStrategy{
 						Branch: b.branch,
 					},
 				})
+				if err != nil {
+					b.logger.Warningf(" clone failure: %s", err)
+				}
 				if err == nil {
 					cloned = true
 				}
@@ -313,7 +337,7 @@ func (b *PlainGitBootstrapper) ReconcileSyncConfig(ctx context.Context, options 
 			return fmt.Errorf("failed to generate OpenPGP entity: %w", err)
 		}
 	}
-	commitMsg := fmt.Sprintf("Add Flux sync manifests")
+	commitMsg := "Add Flux sync manifests"
 	if b.commitMessageAppendix != "" {
 		commitMsg = commitMsg + "\n\n" + b.commitMessageAppendix
 	}
@@ -331,7 +355,7 @@ func (b *PlainGitBootstrapper) ReconcileSyncConfig(ctx context.Context, options 
 	if err == nil {
 		b.logger.Successf("committed sync manifests to %q (%q)", b.branch, commit)
 		b.logger.Actionf("pushing sync manifests to %q", b.url)
-		err = b.gitClient.Push(ctx)
+		err = b.gitClient.Push(ctx, repository.PushConfig{})
 		if err != nil {
 			if strings.HasPrefix(err.Error(), gogit.ErrNonFastForwardUpdate.Error()) {
 				b.logger.Waitingf("git conflict detected, retrying with a fresh clone")
@@ -342,11 +366,18 @@ func (b *PlainGitBootstrapper) ReconcileSyncConfig(ctx context.Context, options 
 					return fmt.Errorf("failed to recreate tmp dir: %w", err)
 				}
 				if err = retry(1, 2*time.Second, func() (err error) {
-					_, err = b.gitClient.Clone(ctx, b.url, repository.CloneOptions{
+					if err = b.cleanGitRepoDir(); err != nil {
+						b.logger.Warningf(" failed to clean directory for git repo: %w", err)
+						return
+					}
+					_, err = b.gitClient.Clone(ctx, b.url, repository.CloneConfig{
 						CheckoutStrategy: repository.CheckoutStrategy{
 							Branch: b.branch,
 						},
 					})
+					if err != nil {
+						b.logger.Warningf(" clone failure: %s", err)
+					}
 					return
 				}); err != nil {
 					return fmt.Errorf("failed to clone repository: %w", err)
@@ -378,21 +409,62 @@ func (b *PlainGitBootstrapper) ReportKustomizationHealth(ctx context.Context, op
 
 	objKey := client.ObjectKey{Name: options.Name, Namespace: options.Namespace}
 
+	expectRevision := fmt.Sprintf("%s@%s", options.Branch, git.Hash(head).Digest())
 	b.logger.Waitingf("waiting for Kustomization %q to be reconciled", objKey.String())
-
-	expectRevision := fmt.Sprintf("%s/%s", options.Branch, head)
-	var k kustomizev1.Kustomization
-	if err := wait.PollImmediate(pollInterval, timeout, kustomizationReconciled(
-		ctx, b.kube, objKey, &k, expectRevision),
-	); err != nil {
-		b.logger.Failuref(err.Error())
-		return err
+	k := &kustomizev1.Kustomization{
+		TypeMeta: metav1.TypeMeta{
+			Kind: kustomizev1.KustomizationKind,
+		},
 	}
-
+	if err := wait.PollUntilContextTimeout(ctx, pollInterval, timeout, true,
+		objectReconciled(b.kube, objKey, k, expectRevision)); err != nil {
+		// If the poll timed out, we want to log the ready condition message as
+		// that likely contains the reason
+		if errors.Is(err, context.DeadlineExceeded) {
+			readyCondition := apimeta.FindStatusCondition(k.Status.Conditions, meta.ReadyCondition)
+			if readyCondition != nil && readyCondition.Status != metav1.ConditionTrue {
+				err = fmt.Errorf("kustomization '%s' not ready: '%s'", objKey, readyCondition.Message)
+			}
+		}
+		b.logger.Failuref(err.Error())
+		return fmt.Errorf("error while waiting for Kustomization to be ready: '%s'", err)
+	}
 	b.logger.Successf("Kustomization reconciled successfully")
 	return nil
 }
 
+func (b *PlainGitBootstrapper) ReportGitRepoHealth(ctx context.Context, options sync.Options, pollInterval, timeout time.Duration) error {
+	head, err := b.gitClient.Head()
+	if err != nil {
+		return err
+	}
+
+	objKey := client.ObjectKey{Name: options.Name, Namespace: options.Namespace}
+
+	b.logger.Waitingf("waiting for GitRepository %q to be reconciled", objKey.String())
+	expectRevision := fmt.Sprintf("%s@%s", options.Branch, git.Hash(head).Digest())
+	g := &sourcev1.GitRepository{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       sourcev1.GitRepositoryKind,
+			APIVersion: sourcev1.GroupVersion.String(),
+		},
+	}
+	if err := wait.PollUntilContextTimeout(ctx, pollInterval, timeout, true,
+		objectReconciled(b.kube, objKey, g, expectRevision)); err != nil {
+		// If the poll timed out, we want to log the ready condition message as
+		// that likely contains the reason
+		if errors.Is(err, context.DeadlineExceeded) {
+			readyCondition := apimeta.FindStatusCondition(g.Status.Conditions, meta.ReadyCondition)
+			if readyCondition != nil && readyCondition.Status != metav1.ConditionTrue {
+				err = fmt.Errorf("gitrepository '%s' not ready: '%s'", objKey, readyCondition.Message)
+			}
+		}
+		b.logger.Failuref(err.Error())
+		return fmt.Errorf("error while waiting for GitRepository to be ready: '%s'", err)
+	}
+	b.logger.Successf("GitRepository reconciled successfully")
+	return nil
+}
 func (b *PlainGitBootstrapper) ReportComponentsHealth(ctx context.Context, install install.Options, timeout time.Duration) error {
 	cfg, err := utils.KubeConfig(b.restClientGetter, b.restClientOptions)
 	if err != nil {
@@ -424,6 +496,21 @@ func (b *PlainGitBootstrapper) ReportComponentsHealth(ctx context.Context, insta
 	return nil
 }
 
+// cleanGitRepoDir cleans the directory meant for the Git repo.
+func (b *PlainGitBootstrapper) cleanGitRepoDir() error {
+	dirs, err := os.ReadDir(b.gitClient.Path())
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, dir := range dirs {
+		if err := os.RemoveAll(filepath.Join(b.gitClient.Path(), dir.Name())); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 func getOpenPgpEntity(keyRing openpgp.EntityList, passphrase, keyID string) (*openpgp.Entity, error) {
 	if len(keyRing) == 0 {
 		return nil, fmt.Errorf("empty GPG key ring")
@@ -431,9 +518,7 @@ func getOpenPgpEntity(keyRing openpgp.EntityList, passphrase, keyID string) (*op
 
 	var entity *openpgp.Entity
 	if keyID != "" {
-		if strings.HasPrefix(keyID, "0x") {
-			keyID = strings.TrimPrefix(keyID, "0x")
-		}
+		keyID = strings.TrimPrefix(keyID, "0x")
 		if len(keyID) != 16 {
 			return nil, fmt.Errorf("invalid GPG key id length; expected %d, got %d", 16, len(keyID))
 		}
