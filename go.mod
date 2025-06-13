@@ -13,27 +13,27 @@ require (
 	github.com/fluxcd/cli-utils v0.36.0-flux.13
 	github.com/fluxcd/go-git-providers v0.23.0
 	github.com/fluxcd/helm-controller/api v1.3.0
-	github.com/fluxcd/image-automation-controller/api v0.41.0
-	github.com/fluxcd/image-reflector-controller/api v0.35.1
+	github.com/fluxcd/image-automation-controller/api v0.41.1
+	github.com/fluxcd/image-reflector-controller/api v0.35.2
 	github.com/fluxcd/kustomize-controller/api v1.6.0
 	github.com/fluxcd/notification-controller/api v1.6.0
 	github.com/fluxcd/pkg/apis/event v0.17.0
 	github.com/fluxcd/pkg/apis/meta v1.12.0
-	github.com/fluxcd/pkg/auth v0.16.0
+	github.com/fluxcd/pkg/auth v0.17.0
 	github.com/fluxcd/pkg/chartutil v1.3.0
 	github.com/fluxcd/pkg/envsubst v1.4.0
-	github.com/fluxcd/pkg/git v0.31.0
-	github.com/fluxcd/pkg/git/gogit v0.33.0
+	github.com/fluxcd/pkg/git v0.32.0
+	github.com/fluxcd/pkg/git/gogit v0.35.0
 	github.com/fluxcd/pkg/kustomize v1.18.0
 	github.com/fluxcd/pkg/oci v0.49.0
 	github.com/fluxcd/pkg/runtime v0.60.0
 	github.com/fluxcd/pkg/sourceignore v0.12.0
 	github.com/fluxcd/pkg/ssa v0.48.0
-	github.com/fluxcd/pkg/ssh v0.18.0
+	github.com/fluxcd/pkg/ssh v0.19.0
 	github.com/fluxcd/pkg/tar v0.12.0
 	github.com/fluxcd/pkg/version v0.7.0
-	github.com/fluxcd/source-controller/api v1.6.0
-	github.com/go-git/go-git/v5 v5.16.0
+	github.com/fluxcd/source-controller/api v1.6.1
+	github.com/go-git/go-git/v5 v5.16.2
 	github.com/go-logr/logr v1.4.2
 	github.com/gonvenience/bunt v1.4.0
 	github.com/gonvenience/ytbx v1.4.6
@@ -50,9 +50,9 @@ require (
 	github.com/phayes/freeport v0.0.0-20220201140144-74d24b5ae9f5
 	github.com/spf13/cobra v1.9.1
 	github.com/theckman/yacspin v0.13.12
-	golang.org/x/crypto v0.38.0
+	golang.org/x/crypto v0.39.0
 	golang.org/x/term v0.32.0
-	golang.org/x/text v0.25.0
+	golang.org/x/text v0.26.0
 	k8s.io/api v0.33.0
 	k8s.io/apiextensions-apiserver v0.33.0
 	k8s.io/apimachinery v0.33.0
@@ -87,6 +87,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.6.34 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/ini v1.8.3 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ecr v1.43.3 // indirect
+	github.com/aws/aws-sdk-go-v2/service/ecrpublic v1.33.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.12.3 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.12.15 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.25.3 // indirect
@@ -240,7 +241,7 @@ require (
 	go.opentelemetry.io/proto/otlp v1.4.0 // indirect
 	golang.org/x/net v0.40.0 // indirect
 	golang.org/x/oauth2 v0.29.0 // indirect
-	golang.org/x/sync v0.14.0 // indirect
+	golang.org/x/sync v0.15.0 // indirect
 	golang.org/x/sys v0.33.0 // indirect
 	golang.org/x/time v0.11.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.4.0 // indirect
