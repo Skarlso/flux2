@@ -13,11 +13,11 @@ require (
 	github.com/distribution/distribution/v3 v3.1.1
 	github.com/fluxcd/cli-utils v1.2.2
 	github.com/fluxcd/go-git-providers v0.27.0
-	github.com/fluxcd/helm-controller/api v1.6.3
-	github.com/fluxcd/image-automation-controller/api v1.2.4
-	github.com/fluxcd/image-reflector-controller/api v1.2.4
-	github.com/fluxcd/kustomize-controller/api v1.9.4
-	github.com/fluxcd/notification-controller/api v1.9.3
+	github.com/fluxcd/helm-controller/api v1.6.4
+	github.com/fluxcd/image-automation-controller/api v1.2.5
+	github.com/fluxcd/image-reflector-controller/api v1.2.5
+	github.com/fluxcd/kustomize-controller/api v1.9.5
+	github.com/fluxcd/notification-controller/api v1.9.4
 	github.com/fluxcd/pkg/apis/event v0.28.0
 	github.com/fluxcd/pkg/apis/meta v1.31.0
 	github.com/fluxcd/pkg/auth v0.55.0
@@ -32,8 +32,8 @@ require (
 	github.com/fluxcd/pkg/ssh v0.25.0
 	github.com/fluxcd/pkg/tar v1.2.0
 	github.com/fluxcd/pkg/version v0.16.0
-	github.com/fluxcd/source-controller/api v1.9.4
-	github.com/fluxcd/source-watcher/api/v2 v2.2.3
+	github.com/fluxcd/source-controller/api v1.9.5
+	github.com/fluxcd/source-watcher/api/v2 v2.2.4
 	github.com/go-git/go-git/v5 v5.19.1
 	github.com/go-logr/logr v1.4.3
 	github.com/gonvenience/bunt v1.4.2
@@ -53,12 +53,12 @@ require (
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/crypto v0.53.0
 	golang.org/x/term v0.44.0
-	golang.org/x/text v0.38.0
-	k8s.io/api v0.36.2
-	k8s.io/apiextensions-apiserver v0.36.2
-	k8s.io/apimachinery v0.36.2
+	golang.org/x/text v0.39.0
+	k8s.io/api v0.36.4
+	k8s.io/apiextensions-apiserver v0.36.4
+	k8s.io/apimachinery v0.36.4
 	k8s.io/cli-runtime v0.36.2
-	k8s.io/client-go v0.36.2
+	k8s.io/client-go v0.36.4
 	k8s.io/kubectl v0.36.2
 	sigs.k8s.io/controller-runtime v0.24.1
 	sigs.k8s.io/kustomize/api v0.21.1
@@ -272,7 +272,7 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	helm.sh/helm/v4 v4.2.2 // indirect
-	k8s.io/component-base v0.36.2 // indirect
+	k8s.io/component-base v0.36.4 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20260603220949-865597e52e25 // indirect
 	k8s.io/utils v0.0.0-20260507154919-ff6756f316d2 // indirect
